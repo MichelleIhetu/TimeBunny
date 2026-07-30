@@ -2,40 +2,52 @@ import { useState, useEffect, useCallback, useMemo } from "react";
 import SEO from "@/components/SEO";
 import { useClockTick } from "@/hooks/useClockTick";
 import { Link, useLocation, useNavigate } from "react-router-dom";
-import { ImageIcon, LogOut, Target, ArrowLeft, ArrowRight, Calendar } from "lucide-react";
+import { LogOut, Target, Calendar } from "lucide-react";
 import { getFormattedDate } from "@/lib/dayGreetings";
 import { toast } from "sonner";
-import SpiderWebBackground from "@/components/SpiderWebBackground";
-import ThemeBackground from "@/components/ThemeBackground";
 import WizardInterface from "@/components/WizardInterface";
-import ScheduleDisplay from "@/components/ScheduleDisplay";
-import ThemeSelector from "@/components/ThemeSelector";
-import ThemeCustomizer, { CustomColors, defaultThemeColors } from "@/components/ThemeCustomizer";
-import CheckInModal, { CheckInData } from "@/components/CheckInModal";
+import LandingBunnySpeech from "@/components/LandingBunnySpeech";
 import { useHourlyCheckIn } from "@/hooks/useHourlyCheckIn";
 import { useChat } from "@/hooks/useChat";
+import { useGoals } from "@/hooks/useGoals";
+import { formatGoalsForSchedule } from "@/lib/goalsSchedule";
+import { useGoalScheduleSync } from "@/hooks/useGoalScheduleSync";
+import {
+  buildExistingSchedulePrompt,
+  buildVibeChecksPrompt,
+  type ScheduleGenerationContext,
+} from "@/lib/scheduleOptimizationContext";
+import { buildStressSchedulePrompt, detectVibeStressSignals } from "@/lib/vibeStressDetection";
+import type { VibeCheckEntry } from "@/hooks/useSchedulePersistence";
 import { useAuth } from "@/hooks/useAuth";
 import { useSchedulePersistence, loadScheduleSnapshot } from "@/hooks/useSchedulePersistence";
-import { UserSettings, backgroundThemes } from "@/types/schedule";
+import { useCalendarAutoSync } from "@/hooks/useCalendarAutoSync";
+import { UserSettings, DEFAULT_SCHEDULE_SUIT } from "@/types/schedule";
 import { Button } from "@/components/ui/button";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import CalendarAnalysisModal, { AnalyzedTask } from "@/components/CalendarAnalysisModal";
+import MonthlyCalendarModal from "@/components/MonthlyCalendarModal";
 import { supabase } from "@/integrations/supabase/client";
 import { connectGoogleCalendar } from "@/lib/googleCalendarAccess";
+import { saveCalendarSuccessState } from "@/pages/CalendarSuccess";
+import {
+  addDaysToDateString,
+  eventLocalDateString,
+  getUserTimezone,
+  localDateString,
+} from "@/lib/localTime";
 
-const requestGoogleCalendarAccessToken = async (): Promise<{ accessToken: string | null; error?: string }> => {
-  const result = await connectGoogleCalendar();
-  return { accessToken: result.accessToken ?? null, error: result.error };
+const requestGoogleCalendarAccessToken = async (
+  forceConsent = false,
+): Promise<{ accessToken: string | null; error?: string; redirected?: boolean }> => {
+  const result = await connectGoogleCalendar({ forceConsent });
+  return { accessToken: result.accessToken ?? null, error: result.error, redirected: result.redirected };
 };
-import bunnyMascot from "@/assets/bunny-mascot.png";
-import speechBubble from "@/assets/bunny-with-speech-bubble.png";
+
 
 
 const defaultSettings: UserSettings = {
   energyLevel: "motivated",
   stressLevel: "medium",
-  theme: "hearts",
-  backgroundTheme: "gothic",
   wakeTime: "07:00",
   bedTime: "23:00",
 };
@@ -45,35 +57,7 @@ const RESUME_CALENDAR_ANALYSIS_KEY = "resume_calendar_analysis";
 const CALENDAR_OAUTH_ATTEMPT_KEY = "calendar_oauth_attempt";
 const WIZARD_SKIP_REQUEST_KEY = "timebunny_skip_to_wizard_requested";
 const POST_GOOGLE_AUTH_REDIRECT_KEY = "timebunny_post_google_auth_redirect";
-
-const hexToHsl = (hex: string): string => {
-  const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
-  if (!result) return "0 0% 0%";
-  let r = parseInt(result[1], 16) / 255;
-  let g = parseInt(result[2], 16) / 255;
-  let b = parseInt(result[3], 16) / 255;
-  const max = Math.max(r, g, b);
-  const min = Math.min(r, g, b);
-  let h = 0,
-    s = 0;
-  const l = (max + min) / 2;
-  if (max !== min) {
-    const d = max - min;
-    s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
-    switch (max) {
-      case r:
-        h = ((g - b) / d + (g < b ? 6 : 0)) / 6;
-        break;
-      case g:
-        h = ((b - r) / d + 2) / 6;
-        break;
-      case b:
-        h = ((r - g) / d + 4) / 6;
-        break;
-    }
-  }
-  return `${Math.round(h * 360)} ${Math.round(s * 100)}% ${Math.round(l * 100)}%`;
-};
+const WELCOME_BACK_WIZARD_KEY = "timebunny_welcome_back_wizard";
 
 const Index = () => {
   const location = useLocation();
@@ -81,19 +65,22 @@ const Index = () => {
   const { user, signOut, loading: authLoading } = useAuth();
   const [settings, setSettings] = useState<UserSettings>(defaultSettings);
   const [viewMode, setViewMode] = useState<ViewMode>("landing");
-  const [isCustomizerOpen, setIsCustomizerOpen] = useState(false);
-  const [customColors, setCustomColors] = useState<CustomColors>(defaultThemeColors.gothic);
-  const [isCheckInModalOpen, setIsCheckInModalOpen] = useState(false);
   const [scheduleLoaded, setScheduleLoaded] = useState(false);
-  const [showSpeechBubble, setShowSpeechBubble] = useState(false);
   const [calendarAnalyzing, setCalendarAnalyzing] = useState(false);
   const [analyzedTasks, setAnalyzedTasks] = useState<AnalyzedTask[] | null>(null);
+  const [importedCalendarTasks, setImportedCalendarTasks] = useState<AnalyzedTask[]>([]);
+  const [showMonthlyCalendar, setShowMonthlyCalendar] = useState(false);
+  const [comfortMode, setComfortMode] = useState<"critical_only" | null>(null);
 
   useClockTick(viewMode === "landing");
 
 
   const { isLoading, sendMessage, generatedSchedule, setGeneratedSchedule } = useChat(settings);
-  const { saveSchedule, loadTodaySchedule } = useSchedulePersistence(user?.id);
+  const { goals } = useGoals();
+  const formattedGoals = useMemo(() => formatGoalsForSchedule(goals), [goals]);
+  const { saveSchedule, loadTodaySchedule, saveCalendarImport } = useSchedulePersistence(user?.id);
+
+  useGoalScheduleSync(generatedSchedule, goals, settings, setGeneratedSchedule, scheduleLoaded);
 
   const persistGoogleTokens = async (activeSession: any) => {
     const refreshToken = activeSession?.provider_refresh_token as string | undefined;
@@ -117,9 +104,20 @@ const Index = () => {
         setGeneratedSchedule(result.schedule);
         if (result.settings) setSettings(result.settings);
       }
+      if (result?.calendarImport?.length) {
+        setImportedCalendarTasks(result.calendarImport);
+      }
       setScheduleLoaded(true);
     });
   }, [scheduleLoaded, loadTodaySchedule]);
+
+  useCalendarAutoSync({
+    enabled: !!user && !authLoading,
+    existingTasks: importedCalendarTasks,
+    onTasksUpdated: setImportedCalendarTasks,
+    saveCalendarImport,
+    paused: calendarAnalyzing,
+  });
 
   // Save schedule whenever it changes
   useEffect(() => {
@@ -128,39 +126,87 @@ const Index = () => {
     }
   }, [generatedSchedule, settings, scheduleLoaded]);
 
-  const { minutesUntilNextCheckIn, completeCheckIn, skipCheckIn } = useHourlyCheckIn({
+  const { completeCheckIn } = useHourlyCheckIn({
     enabled: generatedSchedule.length > 0,
     intervalMinutes: 15,
     onCheckInDue: () => {
-      navigate("/vibe-check", { state: { backgroundTheme: settings.backgroundTheme } });
+      navigate("/vibe-check");
     },
   });
 
-  const currentTask = generatedSchedule[0]?.title;
-
   useEffect(() => {
-    const state = location.state as any;
-    if (state?.vibeCheckResult) {
-      const result = state.vibeCheckResult;
-      completeCheckIn({
-        mood: result.mood,
-        energy: result.energy,
-        taskUpdate: result.notes,
-        needBreak: result.needBreak,
-      });
-      if (result.mood === "struggling") toast("Hang in there! We've noted your vibe.", { icon: "💪" });
-      else if (result.mood === "great") toast("You're killing it! Keep going!", { icon: "🔥" });
-      else toast("Vibe check complete!", { icon: "✨" });
-      if (result.adjustSchedule === "lighten" && generatedSchedule.length > 0)
-        toast("Lightening your load — non-urgent tasks pushed back", { icon: "📋" });
-      else if (result.adjustSchedule === "reschedule") {
-        toast("Let's rebuild your schedule from here", { icon: "🔄" });
-        setGeneratedSchedule([]);
-        setViewMode("wizard");
-      }
-      if (result.needBreak) toast("Adding a break for you — take it easy!", { icon: "☕" });
-      window.history.replaceState({}, document.title);
+    const state = location.state as { vibeCheckResult?: VibeCheckEntry } | null;
+    if (!state?.vibeCheckResult) return;
+
+    const result = state.vibeCheckResult;
+    const stress = result.stressSignals ?? detectVibeStressSignals(result);
+
+    completeCheckIn({
+      mood: result.mood,
+      energy: result.energy,
+      taskUpdate: result.notes,
+      needBreak: result.needBreak,
+    });
+
+    if (stress.criticalOnly) {
+      toast("Keeping today to the essentials — only what matters most.");
+    } else if (result.mood === "struggling") {
+      toast("Hang in there! We've noted your vibe.", { icon: "💪" });
+    } else if (result.mood === "great") {
+      toast("You're killing it! Updating your schedule…", { icon: "🔥" });
+    } else {
+      toast("Vibe check complete — refreshing your schedule", { icon: "✨" });
     }
+    if (result.needBreak) toast("Adding a break for you — take it easy!", { icon: "☕" });
+
+    const optimizeMode: ScheduleGenerationContext["optimizeMode"] =
+      result.adjustSchedule === "reschedule"
+        ? "reschedule"
+        : result.adjustSchedule === "lighten" || stress.criticalOnly
+          ? "critical_only"
+          : stress.detected
+            ? "lighten"
+            : "default";
+
+    loadTodaySchedule().then((session) => {
+      const vibeChecks = session?.vibeChecks ?? [];
+      const calendarAnalysis = session?.calendarImport ?? importedCalendarTasks;
+      const snap = loadScheduleSnapshot();
+      const baseSchedule =
+        generatedSchedule.length > 0
+          ? generatedSchedule
+          : session?.schedule?.length
+            ? session.schedule
+            : snap?.schedule ?? [];
+
+      const stressPrompt = buildStressSchedulePrompt(stress);
+      const vibePrompt = buildVibeChecksPrompt(vibeChecks);
+
+      let prompt: string;
+      if (baseSchedule.length > 0) {
+        prompt = `${buildExistingSchedulePrompt(baseSchedule, optimizeMode)}${vibePrompt}${stressPrompt}\n\nUpdate my schedule for the rest of today based on my vibe check.`;
+      } else {
+        prompt = `${vibePrompt}${stressPrompt}\n\nBuild a realistic schedule for the rest of today. Use calendar analysis and keep it achievable.`;
+      }
+
+      if (optimizeMode === "critical_only") {
+        prompt += "\n\nCRITICAL TASKS ONLY — defer all non-essential work.";
+      }
+
+      sendMessage(prompt, {
+        goals: formattedGoals,
+        calendarAnalysis,
+        vibeChecks,
+        optimizeMode,
+      });
+
+      if (optimizeMode === "critical_only") {
+        setComfortMode("critical_only");
+      }
+      setViewMode("schedule");
+    });
+
+    window.history.replaceState({}, document.title);
   }, [location.state]);
 
   // Skip flow from Auth page: jump directly to the wizard (library scene).
@@ -179,11 +225,10 @@ const Index = () => {
     }
   }, [location.state]);
 
-  // Forwarded from the retired /pomodoro route — drop straight into the
-  // in-app schedule view (with Up Next + active task timer).
+  // Open schedule view when navigated with openScheduleView (e.g. floating nav, old /pomodoro links).
   useEffect(() => {
     const state = location.state as any;
-    if (state?.openScheduleView) {
+    if (state?.openScheduleView && !state?.vibeCheckResult) {
       // Prefer the most recent Google Calendar pull (today's events) so the
       // Pomodoro view reflects what's actually on the user's calendar now.
       (async () => {
@@ -192,34 +237,23 @@ const Index = () => {
             data: { session },
           } = await supabase.auth.getSession();
           if (session) {
-            const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+            const timezone = getUserTimezone();
             const { data } = await supabase.functions.invoke("google-calendar", {
-              body: { cacheOnly: true, timezone },
+              body: { timezone, forceRefresh: true },
             });
             const events: Array<any> = data?.events || [];
-            const todayLocal = new Intl.DateTimeFormat("en-CA", {
-              year: "numeric",
-              month: "2-digit",
-              day: "2-digit",
-              timeZone: timezone,
-            }).format(new Date());
+            const todayLocal = localDateString(undefined, timezone);
             const todays = events
               .filter((e) => e.date === todayLocal && !e.isAllDay && e.startTime)
               .sort((a, b) => (a.startTime || "").localeCompare(b.startTime || ""));
             if (todays.length > 0) {
-              const suits: Array<"hearts" | "diamonds" | "clubs" | "spades"> = [
-                "hearts",
-                "diamonds",
-                "clubs",
-                "spades",
-              ];
               const schedule = todays.map((e, i) => ({
                 id: e.id || `cal-${i}`,
                 title: e.title || "Calendar Event",
                 time: e.startTime,
                 endTime: e.endTime,
                 description: e.description || "",
-                suit: suits[i % suits.length],
+                suit: DEFAULT_SCHEDULE_SUIT,
               }));
               setGeneratedSchedule(schedule);
               setViewMode("schedule");
@@ -252,21 +286,94 @@ const Index = () => {
   }, [location.state]);
 
   useEffect(() => {
-    setCustomColors(defaultThemeColors[settings.backgroundTheme]);
-  }, [settings.backgroundTheme]);
-
-  // Auto-resume calendar analysis after returning from Google OAuth redirect.
-  useEffect(() => {
     if (authLoading) return;
+
+    if (isGoogleCalendarOAuthReturn()) {
+      sessionStorage.removeItem(RESUME_CALENDAR_ANALYSIS_KEY);
+      sessionStorage.removeItem(AUTO_FETCH_CALENDAR_KEY);
+      toast("Signed in! Fetching your calendar…", { icon: "📅" });
+      setTimeout(() => {
+        runCalendarAnalysis();
+      }, 800);
+      return;
+    }
+
+    if (sessionStorage.getItem(AUTO_FETCH_CALENDAR_KEY) === "1" && user) {
+      sessionStorage.removeItem(AUTO_FETCH_CALENDAR_KEY);
+      sessionStorage.removeItem(RESUME_CALENDAR_ANALYSIS_KEY);
+      toast("Signed in! Fetching your calendar…", { icon: "📅" });
+      setTimeout(() => {
+        runCalendarAnalysis();
+      }, 400);
+      return;
+    }
+
     if (sessionStorage.getItem(RESUME_CALENDAR_ANALYSIS_KEY) === "1") {
       sessionStorage.removeItem(RESUME_CALENDAR_ANALYSIS_KEY);
-      // Wait a tick for the auth state to settle, then resume.
       setTimeout(() => {
         runCalendarAnalysis();
       }, 600);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [authLoading]);
+  }, [authLoading, user]);
+
+  // Continue calendar analysis after the success confirmation page.
+  useEffect(() => {
+    const state = location.state as {
+      calendarContinue?: boolean;
+      events?: Array<Record<string, unknown>>;
+      todayStr?: string;
+    } | null;
+    if (!state?.calendarContinue || !state?.events?.length) return;
+
+    (async () => {
+      setCalendarAnalyzing(true);
+      const allEvents = state.events!;
+      const todayStr = state.todayStr ?? localDateString();
+      const weekEndStr = addDaysToDateString(todayStr, 7);
+
+      const getEventDate = (ev: any): string | null => {
+        const raw = ev?.date ?? ev?.startTime ?? ev?.start ?? null;
+        return eventLocalDateString(raw);
+      };
+
+      const inRange = (ev: any, fromStr: string, toStr: string) => {
+        const d = getEventDate(ev);
+        return !!d && d >= fromStr && d <= toStr;
+      };
+
+      let scope: "today" | "week" | "month" = "today";
+      let events = allEvents.filter((e: any) => inRange(e, todayStr, todayStr));
+      if (events.length === 0) {
+        events = allEvents.filter((e: any) => inRange(e, todayStr, weekEndStr));
+        scope = "week";
+      }
+      if (events.length === 0) {
+        events = allEvents;
+        scope = "month";
+      }
+
+      const scopeLabel = scope === "today" ? "today" : scope === "week" ? "this week" : "this month";
+
+      const { data: ana, error: anaErr } = await supabase.functions.invoke("analyze-calendar-tasks", {
+        body: { events, today: todayStr },
+      });
+      if (anaErr || ana?.error) {
+        toast.error(ana?.error || "Analysis failed");
+      } else {
+        const analyzed = ana?.analyzed ?? [];
+        setAnalyzedTasks(analyzed);
+        setImportedCalendarTasks(analyzed);
+        if (analyzed.length > 0) {
+          await saveCalendarImport(analyzed);
+        }
+        toast.success(`Analyzed ${analyzed.length} events from ${scopeLabel} ✨`);
+      }
+      setCalendarAnalyzing(false);
+      window.history.replaceState({}, document.title);
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [location.state]);
 
   useEffect(() => {
     if (!user) return;
@@ -274,49 +381,22 @@ const Index = () => {
     const redirectTo = sessionStorage.getItem(POST_GOOGLE_AUTH_REDIRECT_KEY);
     if (!redirectTo) return;
     sessionStorage.removeItem(POST_GOOGLE_AUTH_REDIRECT_KEY);
-    navigate(redirectTo, { replace: true, state: redirectTo === "/welcome-back" ? { forceLanding: true } : undefined });
+    const inWelcomeBackWizard = sessionStorage.getItem(WELCOME_BACK_WIZARD_KEY) === "1";
+    navigate(redirectTo, {
+      replace: true,
+      state:
+        redirectTo === "/welcome-back" && !inWelcomeBackWizard ? { forceLanding: true } : undefined,
+    });
   }, [user, navigate]);
 
-  useEffect(() => {
-    const root = document.documentElement;
-    root.classList.remove("theme-peppy-pink", "theme-ocean-calm", "theme-sunset-warm", "theme-forest-zen");
-    if (settings.backgroundTheme !== "gothic") root.classList.add(`theme-${settings.backgroundTheme}`);
-    root.style.setProperty("--primary", hexToHsl(customColors.primary));
-    root.style.setProperty("--secondary", hexToHsl(customColors.secondary));
-    root.style.setProperty("--accent", hexToHsl(customColors.accent));
-    root.style.setProperty("--background", hexToHsl(customColors.background));
-    root.style.setProperty("--card", hexToHsl(customColors.card));
-    root.style.setProperty("--foreground", hexToHsl(customColors.foreground));
-    root.style.setProperty("--card-foreground", hexToHsl(customColors.foreground));
-    root.style.setProperty("--popover-foreground", hexToHsl(customColors.foreground));
-  }, [settings.backgroundTheme, customColors]);
-
-  const handleWizardComplete = (tasks: string) => {
-    sendMessage(tasks);
+  const handleWizardComplete = (tasks: string, context?: ScheduleGenerationContext) => {
+    sendMessage(tasks, {
+      goals: formattedGoals,
+      calendarAnalysis: context?.calendarAnalysis ?? importedCalendarTasks,
+      vibeChecks: context?.vibeChecks,
+      optimizeMode: context?.optimizeMode,
+    });
     setViewMode("schedule");
-  };
-  const handleClearSchedule = () => {
-    setGeneratedSchedule([]);
-    setViewMode("wizard");
-  };
-  const handleBackToSchedule = () => {
-    setViewMode("schedule");
-  };
-  const handleResetColors = () => {
-    setCustomColors(defaultThemeColors[settings.backgroundTheme]);
-  };
-
-  const handleCheckInSubmit = (data: CheckInData) => {
-    completeCheckIn(data);
-    if (data.mood === "struggling")
-      toast("Hang in there! Consider taking a longer break.", {
-        description: "It's okay to adjust your pace.",
-        icon: "💪",
-      });
-    else if (data.mood === "great")
-      toast("Amazing! Keep up the great work!", { description: "You're doing wonderfully!", icon: "🌟" });
-    else toast("Check-in complete!", { description: "Keep going, you've got this!", icon: "✨" });
-    if (data.needBreak) toast("Taking a longer break", { description: "Enjoy your rest time!", icon: "☕" });
   };
 
   const playBing = () => {
@@ -342,6 +422,7 @@ const Index = () => {
 
   const handleStart = () => {
     playBing();
+    sessionStorage.removeItem(WELCOME_BACK_WIZARD_KEY);
     navigate("/welcome-back");
   };
   const handleBackToLanding = () => {
@@ -373,14 +454,6 @@ const Index = () => {
         return null;
       }
 
-      const {
-        data: { session: currentSession },
-      } = await supabase.auth.getSession();
-      if (currentSession) {
-        return null;
-      }
-
-
       // Guard against an infinite redirect loop when Supabase never finishes
       // establishing a session after Google sign-in (bad_jwt / missing sub).
       if (sessionStorage.getItem(CALENDAR_OAUTH_ATTEMPT_KEY) === "1") {
@@ -396,41 +469,33 @@ const Index = () => {
         return null;
       }
 
-      toast("Opening Google sign-in first…", { icon: "🔐" });
+      toast("Opening Google Calendar permissions…", { icon: "🔐" });
       calendarConsentAttempted = true;
       sessionStorage.setItem(RESUME_CALENDAR_ANALYSIS_KEY, "1");
       sessionStorage.setItem(CALENDAR_OAUTH_ATTEMPT_KEY, "1");
       sessionStorage.setItem(POST_GOOGLE_AUTH_REDIRECT_KEY, "/");
-      const { lovable } = await import("@/integrations/lovable");
-      const result = await lovable.auth.signInWithOAuth("google", {
-        redirect_uri: window.location.origin,
-        extraParams: {
-          prompt: "consent",
-          access_type: "offline",
-          include_granted_scopes: "true",
-          scope:
-            "openid email profile https://www.googleapis.com/auth/calendar.readonly https://www.googleapis.com/auth/calendar.events.readonly",
-        },
-      });
+      markAutoFetchCalendarAfterSignIn();
+
+      // Always force consent — even when already signed in — so calendar
+      // scopes and a refresh token are granted.
+      const result = await requestGoogleCalendarAccessToken(true);
 
       if (result.error) {
         sessionStorage.removeItem(RESUME_CALENDAR_ANALYSIS_KEY);
         sessionStorage.removeItem(CALENDAR_OAUTH_ATTEMPT_KEY);
         sessionStorage.removeItem(POST_GOOGLE_AUTH_REDIRECT_KEY);
-        toast.error(result.error.message || "Could not start Google sign-in");
+        toast.error(result.error || "Could not start Google sign-in");
         return null;
       }
 
       if (result.redirected) return null;
 
-      const refreshedSession = await waitForAuthSession();
-      await persistGoogleTokens(refreshedSession);
-      if (refreshedSession) {
+      if (result.accessToken) {
         sessionStorage.removeItem(RESUME_CALENDAR_ANALYSIS_KEY);
         sessionStorage.removeItem(CALENDAR_OAUTH_ATTEMPT_KEY);
       }
       sessionStorage.removeItem(POST_GOOGLE_AUTH_REDIRECT_KEY);
-      return refreshedSession?.provider_token ?? null;
+      return result.accessToken;
     };
 
     try {
@@ -461,10 +526,13 @@ const Index = () => {
 
       toast("Scanning the next 31 days of your calendar…", { icon: "🔍" });
 
-      const fetchCalendar = async (calendarAccessToken?: string) => {
+      const fetchCalendar = async (calendarAccessToken?: string | null) => {
+        const headers: Record<string, string> = {};
+        if (calendarAccessToken) headers["x-provider-token"] = calendarAccessToken;
         return supabase.functions.invoke("google-calendar", {
+          headers,
           body: {
-            timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+            timezone: getUserTimezone(),
             timeMin: start.toISOString(),
             timeMax: end.toISOString(),
           },
@@ -478,8 +546,8 @@ const Index = () => {
         } else {
           toast("Calendar permission needs to be refreshed.", { icon: "📅" });
         }
-        await requestCalendarConsent();
-        ({ data: calData, error: calErr } = await fetchCalendar());
+        const accessToken = await requestCalendarConsent();
+        ({ data: calData, error: calErr } = await fetchCalendar(accessToken));
         if (calData?.needsAuth) {
           toast.error("Calendar access unavailable. Please sign in again.");
           return;
@@ -492,53 +560,22 @@ const Index = () => {
       }
       const allEvents = calData?.events ?? [];
 
-      // Smart fallback: try today → this week → this month
-      const now = new Date();
-      const todayStr = now.toISOString().slice(0, 10);
-      const weekEnd = new Date(now);
-      weekEnd.setDate(weekEnd.getDate() + 7);
-
-      const getEventDate = (ev: any): string | null => {
-        const raw = ev?.date ?? ev?.startTime ?? ev?.start ?? null;
-        if (!raw) return null;
-        try {
-          return new Date(raw).toISOString().slice(0, 10);
-        } catch {
-          return null;
-        }
-      };
-
-      const inRange = (ev: any, fromStr: string, toStr: string) => {
-        const d = getEventDate(ev);
-        return !!d && d >= fromStr && d <= toStr;
-      };
-
-      let scope: "today" | "week" | "month" = "today";
-      let events = allEvents.filter((e: any) => inRange(e, todayStr, todayStr));
-      if (events.length === 0) {
-        const weekEndStr = weekEnd.toISOString().slice(0, 10);
-        events = allEvents.filter((e: any) => inRange(e, todayStr, weekEndStr));
-        scope = "week";
-      }
-      if (events.length === 0) {
-        events = allEvents;
-        scope = "month";
-      }
-
-      const scopeLabel = scope === "today" ? "today" : scope === "week" ? "this week" : "this month";
-      toast(`Nothing ${scope === "today" ? "" : "for today — "}analyzing ${scopeLabel}…`, { icon: "🧠" });
-
-      const { data: ana, error: anaErr } = await supabase.functions.invoke("analyze-calendar-tasks", {
-        body: { events, today: todayStr },
-      });
-      if (anaErr || ana?.error) {
-        toast.error(ana?.error || "Analysis failed");
+      if (allEvents.length === 0) {
+        toast.error("No upcoming events found in the next 31 days.");
         setCalendarAnalyzing(false);
         return;
       }
 
-      setAnalyzedTasks(ana?.analyzed ?? []);
-      toast.success(`Analyzed ${ana?.analyzed?.length ?? 0} events from ${scopeLabel} ✨`);
+      setCalendarAnalyzing(false);
+      const successState = {
+        eventCount: allEvents.length,
+        scopeLabel: "the next 31 days",
+        returnTo: "/",
+        events: allEvents,
+        todayStr: localDateString(),
+      };
+      saveCalendarSuccessState(successState);
+      navigate("/calendar-success", { state: successState });
     } catch (e) {
       console.error(e);
       toast.error("Could not analyze calendar");
@@ -708,44 +745,44 @@ const Index = () => {
               <span>🎯</span>
             </Link>
             <button
-              onClick={runCalendarAnalysis}
-              disabled={calendarAnalyzing}
-              className="flex items-center gap-2 px-7 py-3.5 rounded-full glass-pill text-lg transition-all hover:scale-105 disabled:opacity-60"
+              onClick={() => setShowMonthlyCalendar(true)}
+              className="flex items-center gap-2 px-7 py-3.5 rounded-full glass-pill text-lg transition-all hover:scale-105"
               style={{ color: "hsl(280 40% 40%)" }}
-              aria-label="Scan and analyze my calendar for the month"
-              title={`Scan calendar (next 31 days) • ${todayDate}`}
+              aria-label="Open monthly calendar"
+              title={`My calendar • ${todayDate}`}
             >
               <Calendar className="w-6 h-6" />
-              <span className="font-body font-semibold">{calendarAnalyzing ? "Analyzing…" : "My Calendar"}</span>
+              <span className="font-body font-semibold">My Calendar</span>
               <span>📅</span>
             </button>
           </div>
-
-          {/* Bunny mascot - positioned on the right */}
-          <div className="absolute bottom-4 -right-28 sm:bottom-8 sm:-right-24 lg:-right-20 z-10">
-            <div
-              role="button"
-              tabIndex={0}
-              aria-label="Toggle TimeBunny mascot speech bubble"
-              className="relative cursor-pointer"
-              onClick={() => setShowSpeechBubble(!showSpeechBubble)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" || e.key === " ") setShowSpeechBubble(!showSpeechBubble);
-              }}
-            >
-              {/* Bunny mascot */}
-              <img
-                src={bunnyMascot}
-                alt="TimeBunny mascot"
-                className="w-72 sm:w-96 md:w-[28rem] lg:w-[32rem] object-contain drop-shadow-xl transition-transform duration-200 hover:scale-105 active:scale-95 pixel-img"
-                draggable={false}
-              />
-            </div>
-          </div>
         </div>
+
+        <LandingBunnySpeech
+          comfortMode={comfortMode}
+          autoShow={comfortMode === "critical_only"}
+        />
+
+        <MonthlyCalendarModal
+          isOpen={showMonthlyCalendar}
+          onClose={() => setShowMonthlyCalendar(false)}
+          calendarTasks={importedCalendarTasks}
+          goals={goals}
+          schedule={generatedSchedule}
+          isSignedIn={!!user}
+          onCalendarTasksUpdated={setImportedCalendarTasks}
+          saveCalendarImport={saveCalendarImport}
+          onConnectCalendar={runCalendarAnalysis}
+        />
+
         <CalendarAnalysisModal
           isOpen={analyzedTasks !== null}
           onClose={() => setAnalyzedTasks(null)}
+          onSave={async (tasks) => {
+            await saveCalendarImport(tasks);
+            setImportedCalendarTasks(tasks);
+            toast.success("Calendar import saved!");
+          }}
           onNext={() => {
             playBing();
             setViewMode("wizard");
@@ -771,6 +808,9 @@ const Index = () => {
         onComplete={handleWizardComplete}
         isLoading={isLoading}
         generatedSchedule={generatedSchedule}
+        analyzedCalendarTasks={importedCalendarTasks}
+        comfortMode={comfortMode}
+        onComfortDismiss={() => setComfortMode(null)}
         initialScene={viewMode === "schedule" ? "schedule" : "library"}
         onScheduleChange={(items) => setGeneratedSchedule(items)}
         onUpdateSchedule={() => {

@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/useAuth";
 import { toast } from "sonner";
+import { localDateString } from "@/lib/localTime";
 
 export interface Goal {
   id: string;
@@ -101,6 +102,11 @@ export function useGoals() {
     });
 
     setGoals(enriched);
+    try {
+      localStorage.setItem(`timebunny_goals_${user.id}`, JSON.stringify(enriched));
+    } catch {
+      // ignore quota / private mode
+    }
     setLoading(false);
   }, [user]);
 
@@ -113,6 +119,7 @@ export function useGoals() {
     description?: string;
     goal_type: "monthly" | "ongoing";
     target_hours: number;
+    target_unit?: string;
     category: string;
     end_date?: string;
   }) => {
@@ -120,14 +127,17 @@ export function useGoals() {
       toast.error("Please sign in to save goals");
       return;
     }
+    const unit = goal.target_unit || "hours";
+    const bookCompletion = isBookCompletionUnit(unit);
     const { error } = await supabase.from("goals").insert({
       user_id: user.id,
       title: goal.title,
       description: goal.description || null,
-      goal_type: goal.goal_type,
+      goal_type: bookCompletion ? "ongoing" : goal.goal_type,
       target_hours: goal.target_hours,
+      target_unit: unit,
       category: goal.category,
-      end_date: goal.end_date || null,
+      end_date: bookCompletion ? null : goal.end_date || null,
     });
     if (error) {
       console.error("Failed to create goal:", error);
@@ -138,19 +148,67 @@ export function useGoals() {
     fetchGoals();
   };
 
-  const logProgress = async (goalId: string, hours: number, notes?: string) => {
-    if (!user) return;
-    const today = new Date().toISOString().split("T")[0];
+  const addGoalProgress = async (goalId: string, deltaHours: number, notes?: string, silent = false) => {
+    if (!user || deltaHours <= 0) return;
+    const today = localDateString();
+
+    const { data: existing } = await supabase
+      .from("goal_logs")
+      .select("hours_logged, notes")
+      .eq("goal_id", goalId)
+      .eq("log_date", today)
+      .maybeSingle();
+
+    const priorHours = existing?.hours_logged ? Number(existing.hours_logged) : 0;
+    const newHours = priorHours + deltaHours;
 
     const { error } = await supabase.from("goal_logs").upsert(
       {
         goal_id: goalId,
         user_id: user.id,
         log_date: today,
-        hours_logged: hours,
+        hours_logged: newHours,
+        notes: notes || existing?.notes || null,
+      },
+      { onConflict: "goal_id,log_date" },
+    );
+
+    if (error) {
+      if (!silent) toast.error("Failed to log goal progress");
+      return;
+    }
+    if (!silent) {
+      const goal = goals.find((g) => g.id === goalId);
+      const unit = normalizeGoalUnit(goal?.target_unit);
+      if (unit === "pages") toast.success(`+${Math.round(deltaHours)} pages logged toward your book 📖`);
+      else if (unit === "chapters") toast.success(`+${Math.round(deltaHours)} chapters logged toward your book 📖`);
+      else toast.success(`+${Math.round(deltaHours * 60)} min logged toward your goal 🎯`);
+    }
+    fetchGoals();
+  };
+
+  const logProgress = async (goalId: string, amount: number, notes?: string) => {
+    if (!user || amount <= 0) return;
+
+    const goal = goals.find((g) => g.id === goalId);
+    const unit = normalizeGoalUnit(goal?.target_unit);
+
+    if (isBookCompletionUnit(unit)) {
+      await addGoalProgress(goalId, amount, notes);
+      return;
+    }
+
+    const today = localDateString();
+
+    const { error } = await supabase.from("goal_logs").upsert(
+      {
+        goal_id: goalId,
+        user_id: user.id,
+        log_date: today,
+        hours_logged: amount,
         notes: notes || null,
       },
-      { onConflict: "goal_id,log_date" }
+      { onConflict: "goal_id,log_date" },
     );
 
     if (error) {
@@ -176,5 +234,5 @@ export function useGoals() {
     fetchGoals();
   };
 
-  return { goals, loading, addGoal, logProgress, archiveGoal, refetch: fetchGoals };
+  return { goals, loading, addGoal, logProgress, addGoalProgress, archiveGoal, refetch: fetchGoals };
 }

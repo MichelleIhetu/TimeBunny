@@ -6,7 +6,7 @@ import { lovable } from "@/integrations/lovable/index";
 import { toast } from "sonner";
 import { LogIn, UserPlus, Calendar, ArrowLeft } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
-import landingBunny from "@/assets/landing-bunny.png";
+import { markAutoFetchCalendarAfterSignIn } from "@/lib/googleOAuthReturn";
 
 const WIZARD_SKIP_REQUEST_KEY = "timebunny_skip_to_wizard_requested";
 
@@ -89,6 +89,7 @@ const Auth = () => {
   const handleGoogleSignIn = async () => {
     setGoogleLoading(true);
     try {
+      markAutoFetchCalendarAfterSignIn();
       const { error } = await supabase.auth.signInWithOAuth({
         provider: "google",
         options: {
@@ -137,16 +138,6 @@ const Auth = () => {
       />
 
       <div className="relative z-10 w-full max-w-md">
-        {/* Bunny mascot peeking above the card */}
-        <div className="flex justify-center mb-[-28px] relative z-20">
-          <img
-            src={landingBunny}
-            alt="TimeBunny mascot"
-            className="w-24 h-24 object-contain drop-shadow-[3px_3px_0px_#a78bfa]"
-            style={{ imageRendering: "pixelated" }}
-          />
-        </div>
-
         <div className="bg-white border-2 border-[#5b21b6] shadow-[6px_6px_0px_#a78bfa] p-6 space-y-5">
           {/* Header */}
           <div className="text-center space-y-2">

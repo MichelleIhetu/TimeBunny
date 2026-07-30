@@ -52,14 +52,6 @@ export default {
           DEFAULT: "hsl(var(--card))",
           foreground: "hsl(var(--card-foreground))",
         },
-        wonderland: {
-          teal: "hsl(var(--wonderland-teal))",
-          gold: "hsl(var(--wonderland-gold))",
-          cream: "hsl(var(--wonderland-cream))",
-          rose: "hsl(var(--wonderland-rose))",
-          purple: "hsl(var(--wonderland-purple))",
-          forest: "hsl(var(--wonderland-forest))",
-        },
         sidebar: {
           DEFAULT: "hsl(var(--sidebar-background))",
           foreground: "hsl(var(--sidebar-foreground))",

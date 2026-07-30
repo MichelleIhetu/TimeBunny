@@ -1,7 +1,7 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import SEO from "@/components/SEO";
 import { Link } from "react-router-dom";
-import { ArrowLeft, Plus, Flame, Target, TrendingUp, Archive, Clock, Sparkles, Wand2, CheckCircle2, X } from "lucide-react";
+import { ArrowLeft, Plus, Flame, Target, TrendingUp, Archive, Clock, Wand2, CheckCircle2, X, Route, CalendarPlus, Award } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { Input } from "@/components/ui/input";
@@ -13,7 +13,41 @@ import { useGoals, GoalWithProgress } from "@/hooks/useGoals";
 import { useSchedulePersistence } from "@/hooks/useSchedulePersistence";
 import { useAuth } from "@/hooks/useAuth";
 import { supabase } from "@/integrations/supabase/client";
-import { toast } from "sonner";
+import {
+  GoalSuggestion,
+  goalSuggestionsToScheduleItems,
+  mergeScheduleItems,
+} from "@/lib/goalsSchedule";
+import {
+  defaultTargetForUnit,
+  formatGoalProgress,
+  GoalTargetUnit,
+  goalProgressSubtitle,
+  isBookCompletionUnit,
+  isReadingCategory,
+  logPlaceholder,
+  logStep,
+  normalizeGoalUnit,
+  progressPercent,
+  READING_TARGET_UNITS,
+  targetLabel,
+} from "@/lib/goalUnits";
+import {
+  isGoalComplete,
+  loadCelebratedGoalIds,
+  saveCelebratedGoalIds,
+} from "@/lib/goalCarrots";
+import { endOfMonthDateString, localMonthString } from "@/lib/localTime";
+import { UserSettings } from "@/types/schedule";
+import GoalCarrotCelebration from "@/components/GoalCarrotCelebration";
+import GrowingCarrot from "@/components/GrowingCarrot";
+
+const defaultScheduleSettings: UserSettings = {
+  energyLevel: "motivated",
+  stressLevel: "medium",
+  wakeTime: "07:00",
+  bedTime: "23:00",
+};
 
 const PIXEL: React.CSSProperties = { fontFamily: "'Press Start 2P', cursive" };
 const VT: React.CSSProperties = { fontFamily: "'VT323', monospace" };
@@ -21,6 +55,7 @@ const VT: React.CSSProperties = { fontFamily: "'VT323', monospace" };
 const CATEGORIES = [
   { value: "fitness", label: "🏋️ Fitness", tip: "Start with just 2 mins — make it obvious & easy" },
   { value: "learning", label: "📚 Learning", tip: "Attach it to an existing habit (habit stacking)" },
+  { value: "reading", label: "📖 Reading", tip: "Log pages or chapters toward finishing the book" },
   { value: "creative", label: "🎨 Creative Projects", tip: "Never miss twice — get back on track fast" },
   { value: "career", label: "💼 Career Growth", tip: "Track it visibly — don't break the chain" },
   { value: "wellness", label: "🧘 Wellness", tip: "Environment > motivation — design your space" },
@@ -37,38 +72,44 @@ function GoalCard({
   onArchive,
 }: {
   goal: GoalWithProgress;
-  onLog: (id: string, hours: number, notes?: string) => void;
+  onLog: (id: string, amount: number, notes?: string) => void;
   onArchive: (id: string) => void;
 }) {
-  const [logHours, setLogHours] = useState("0.5");
+  const unit = normalizeGoalUnit(goal.target_unit);
+  const [logAmount, setLogAmount] = useState(() => (unit === "hours" ? "0.5" : unit === "minutes" ? "30" : "10"));
   const [logNotes, setLogNotes] = useState("");
   const [showLog, setShowLog] = useState(false);
 
-  const progress = goal.target_hours > 0 ? Math.min((goal.totalLogged / goal.target_hours) * 100, 100) : 0;
+  const progress = progressPercent(goal.totalLogged, goal.target_hours);
   const categoryInfo = CATEGORIES.find((c) => c.value === goal.category);
   const emoji = categoryInfo?.label.split(" ")[0] ?? "⭐";
 
   const handleLog = () => {
-    onLog(goal.id, parseFloat(logHours) || 0, logNotes || undefined);
-    setLogHours("0.5");
+    onLog(goal.id, parseFloat(logAmount) || 0, logNotes || undefined);
+    setLogAmount(unit === "hours" ? "0.5" : unit === "minutes" ? "30" : "10");
     setLogNotes("");
     setShowLog(false);
   };
 
   return (
     <div className="group relative bg-white border-2 border-[#ddd6fe] p-4 hover:bg-purple-50 transition-colors">
-      <div className="flex justify-between items-start mb-3 gap-3">
+      <div className="flex gap-3 mb-3">
+        <GrowingCarrot progress={progress} className="flex-shrink-0" />
         <div className="min-w-0 flex-1">
-          <h3 className="text-[#5b21b6] text-[11px] mb-2 leading-relaxed flex items-center gap-2" style={PIXEL}>
-            <span className="text-base leading-none">{emoji}</span>
-            <span className="truncate">{goal.title}</span>
-          </h3>
-          <p className="text-[#a78bfa] text-lg leading-none" style={VT}>
-            {goal.totalLogged.toFixed(1)}h / {goal.target_hours}h · {goal.goal_type}
-          </p>
-        </div>
-        <div className="text-[#2dd4bf] text-2xl leading-none flex-shrink-0" style={VT}>
-          {Math.round(progress)}%
+          <div className="flex justify-between items-start gap-3">
+            <div className="min-w-0 flex-1">
+              <h3 className="text-[#5b21b6] text-[11px] mb-2 leading-relaxed flex items-center gap-2" style={PIXEL}>
+                <span className="text-base leading-none">{emoji}</span>
+                <span className="truncate">{goal.title}</span>
+              </h3>
+              <p className="text-[#a78bfa] text-lg leading-none" style={VT}>
+                {formatGoalProgress(goal.totalLogged, goal.target_hours, unit)} · {goalProgressSubtitle(unit, goal.goal_type)}
+              </p>
+            </div>
+            <div className="text-[#2dd4bf] text-2xl leading-none flex-shrink-0" style={VT}>
+              {Math.round(progress)}%
+            </div>
+          </div>
         </div>
       </div>
 
@@ -115,12 +156,12 @@ function GoalCard({
           <div className="flex gap-2">
             <Input
               type="number"
-              step="0.25"
+              step={logStep(unit)}
               min="0"
-              value={logHours}
-              onChange={(e) => setLogHours(e.target.value)}
+              value={logAmount}
+              onChange={(e) => setLogAmount(e.target.value)}
               className="h-8 text-sm border-[#ddd6fe] focus-visible:ring-[#5b21b6]"
-              placeholder="hours"
+              placeholder={logPlaceholder(unit)}
             />
           </div>
           <Textarea
@@ -156,19 +197,51 @@ function AddGoalDialog({ onAdd, trigger }: { onAdd: (g: any) => void; trigger: R
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const [goalType, setGoalType] = useState<"monthly" | "ongoing">("monthly");
-  const [targetHours, setTargetHours] = useState("10");
+  const [targetUnit, setTargetUnit] = useState<GoalTargetUnit>("hours");
+  const [targetAmount, setTargetAmount] = useState("10");
   const [category, setCategory] = useState("general");
+
+  const handleCategoryChange = (value: string) => {
+    setCategory(value);
+    if (isReadingCategory(value)) {
+      setTargetUnit("pages");
+      setTargetAmount(defaultTargetForUnit("pages"));
+      setGoalType("ongoing");
+    } else {
+      setTargetUnit("hours");
+      setTargetAmount(defaultTargetForUnit("hours"));
+    }
+  };
+
+  const handleUnitChange = (value: GoalTargetUnit) => {
+    setTargetUnit(value);
+    setTargetAmount(defaultTargetForUnit(value));
+    if (isBookCompletionUnit(value)) setGoalType("ongoing");
+  };
+
+  const bookCompletion = isBookCompletionUnit(targetUnit);
 
   const handleSubmit = () => {
     if (!title.trim()) return;
+    const resolvedType = bookCompletion ? "ongoing" : goalType;
     const endDate =
-      goalType === "monthly"
-        ? new Date(new Date().getFullYear(), new Date().getMonth() + 1, 0).toISOString().split("T")[0]
+      resolvedType === "monthly"
+        ? endOfMonthDateString()
         : undefined;
-    onAdd({ title, description, goal_type: goalType, target_hours: parseFloat(targetHours) || 10, category, end_date: endDate });
+    onAdd({
+      title,
+      description,
+      goal_type: resolvedType,
+      target_hours: parseFloat(targetAmount) || parseFloat(defaultTargetForUnit(targetUnit)),
+      target_unit: targetUnit,
+      category,
+      end_date: endDate,
+    });
     setTitle("");
     setDescription("");
-    setTargetHours("10");
+    setTargetUnit("hours");
+    setTargetAmount("10");
+    setCategory("general");
     setOpen(false);
   };
 
@@ -182,16 +255,16 @@ function AddGoalDialog({ onAdd, trigger }: { onAdd: (g: any) => void; trigger: R
         <div className="space-y-4 py-2">
           <div>
             <Label className="text-[#5b21b6] text-[10px]" style={PIXEL}>WHAT</Label>
-            <Input placeholder="e.g. Work out regularly" value={title} onChange={(e) => setTitle(e.target.value)} className="border-[#ddd6fe]" />
+            <Input placeholder={isReadingCategory(category) ? "e.g. Half A Yellow Sun" : "e.g. Work out regularly"} value={title} onChange={(e) => setTitle(e.target.value)} className="border-[#ddd6fe]" />
           </div>
           <div>
             <Label className="text-[#5b21b6] text-[10px]" style={PIXEL}>WHY</Label>
             <Textarea placeholder="Your motivation" value={description} onChange={(e) => setDescription(e.target.value)} className="min-h-[60px] border-[#ddd6fe]" />
           </div>
-          <div className="grid grid-cols-2 gap-3">
+          <div className={`grid gap-3 ${bookCompletion ? "grid-cols-1" : "grid-cols-2"}`}>
             <div>
               <Label className="text-[#5b21b6] text-[10px]" style={PIXEL}>CATEGORY</Label>
-              <Select value={category} onValueChange={setCategory}>
+              <Select value={category} onValueChange={handleCategoryChange}>
                 <SelectTrigger className="border-[#ddd6fe]"><SelectValue /></SelectTrigger>
                 <SelectContent>
                   {CATEGORIES.map((c) => (
@@ -200,22 +273,51 @@ function AddGoalDialog({ onAdd, trigger }: { onAdd: (g: any) => void; trigger: R
                 </SelectContent>
               </Select>
             </div>
+            {!bookCompletion && (
+              <div>
+                <Label className="text-[#5b21b6] text-[10px]" style={PIXEL}>TYPE</Label>
+                <Select value={goalType} onValueChange={(v) => setGoalType(v as "monthly" | "ongoing")}>
+                  <SelectTrigger className="border-[#ddd6fe]"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="monthly">Monthly</SelectItem>
+                    <SelectItem value="ongoing">Ongoing</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
+          </div>
+          {isReadingCategory(category) && (
             <div>
-              <Label className="text-[#5b21b6] text-[10px]" style={PIXEL}>TYPE</Label>
-              <Select value={goalType} onValueChange={(v) => setGoalType(v as any)}>
+              <Label className="text-[#5b21b6] text-[10px]" style={PIXEL}>TRACK BY</Label>
+              <Select value={targetUnit} onValueChange={(v) => handleUnitChange(v as GoalTargetUnit)}>
                 <SelectTrigger className="border-[#ddd6fe]"><SelectValue /></SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="monthly">Monthly</SelectItem>
-                  <SelectItem value="ongoing">Ongoing</SelectItem>
+                  {READING_TARGET_UNITS.map((u) => (
+                    <SelectItem key={u.value} value={u.value}>{u.label}</SelectItem>
+                  ))}
                 </SelectContent>
               </Select>
             </div>
-          </div>
+          )}
+          {bookCompletion && (
+            <div className="p-3 bg-purple-50 border-2 border-[#ddd6fe]">
+              <p className="text-xs text-[#5b21b6]" style={VT}>
+                Pages and chapters track progress through the whole book — not a monthly target.
+              </p>
+            </div>
+          )}
           <div>
             <Label className="text-[#5b21b6] text-[10px]" style={PIXEL}>
-              TARGET HOURS {goalType === "monthly" ? "/MONTH" : "TOTAL"}
+              {targetLabel(targetUnit, goalType)}
             </Label>
-            <Input type="number" min="1" value={targetHours} onChange={(e) => setTargetHours(e.target.value)} className="border-[#ddd6fe]" />
+            <Input
+              type="number"
+              min="1"
+              step={logStep(targetUnit)}
+              value={targetAmount}
+              onChange={(e) => setTargetAmount(e.target.value)}
+              className="border-[#ddd6fe]"
+            />
           </div>
           <div className="p-3 bg-purple-50 border-2 border-[#ddd6fe]">
             <p className="text-xs text-[#5b21b6]" style={VT}>
@@ -237,27 +339,20 @@ function AddGoalDialog({ onAdd, trigger }: { onAdd: (g: any) => void; trigger: R
   );
 }
 
-interface GoalSuggestion {
-  goalTitle: string;
-  goalId?: string;
-  startTime: string;
-  endTime: string;
-  durationMinutes: number;
-  activity: string;
-  reason: string;
-  category?: string;
-}
-
 function SuggestionsPanel({
   suggestions,
   onDismiss,
   onAccept,
+  onIntegrateAll,
   onClose,
+  integrating,
 }: {
   suggestions: GoalSuggestion[];
   onDismiss: (idx: number) => void;
   onAccept: (s: GoalSuggestion) => void;
+  onIntegrateAll: () => void;
   onClose: () => void;
+  integrating: boolean;
 }) {
   if (suggestions.length === 0) return null;
 
@@ -265,16 +360,26 @@ function SuggestionsPanel({
     <div className="bg-white border-2 border-[#2dd4bf] p-4 shadow-[4px_4px_0px_#2dd4bf] mb-6">
       <div className="flex items-center justify-between mb-3">
         <div className="flex items-center gap-2">
-          <Sparkles className="w-4 h-4 text-[#2dd4bf]" />
-          <h3 className="text-[#5b21b6] text-[11px]" style={PIXEL}>AI SUGGESTIONS</h3>
+          <Route className="w-4 h-4 text-[#2dd4bf]" />
+          <h3 className="text-[#5b21b6] text-[11px]" style={PIXEL}>A POTENTIAL ROUTE</h3>
         </div>
         <button onClick={onClose} className="text-[#a78bfa] hover:text-[#5b21b6]">
           <X className="w-4 h-4" />
         </button>
       </div>
       <p className="text-[#a78bfa] text-base mb-3" style={VT}>
-        Found gaps in your schedule — squeeze in goal time.
+        One way to fit your goals into today&apos;s open time.
       </p>
+      <button
+        type="button"
+        onClick={onIntegrateAll}
+        disabled={integrating}
+        className="mb-4 w-full flex items-center justify-center gap-2 py-2.5 bg-[#2dd4bf] text-white text-[10px] hover:bg-[#14b8a6] disabled:opacity-50 transition-colors"
+        style={PIXEL}
+      >
+        <CalendarPlus className={`w-3.5 h-3.5 ${integrating ? "animate-pulse" : ""}`} />
+        {integrating ? "ADDING TO SCHEDULE..." : "ADD ALL TO MAIN SCHEDULE"}
+      </button>
       <div className="space-y-2">
         {suggestions.map((s, i) => (
           <div key={i} className="flex items-start gap-3 p-3 border-2 border-[#ddd6fe]">
@@ -328,14 +433,54 @@ function StatTile({ label, value, color = "#5b21b6" }: { label: string; value: s
 export default function Goals() {
   const { user } = useAuth();
   const { goals, loading, addGoal, logProgress, archiveGoal } = useGoals();
-  const { loadTodaySchedule } = useSchedulePersistence(user?.id);
+  const { loadTodaySchedule, saveSchedule } = useSchedulePersistence(user?.id);
   const [suggestions, setSuggestions] = useState<GoalSuggestion[]>([]);
   const [loadingSuggestions, setLoadingSuggestions] = useState(false);
+  const [integratingSuggestions, setIntegratingSuggestions] = useState(false);
+  const [celebratingGoal, setCelebratingGoal] = useState<GoalWithProgress | null>(null);
+  const celebratedIdsRef = useRef<Set<string>>(new Set());
+  const prevCompleteRef = useRef<Set<string>>(new Set());
+  const goalsInitializedRef = useRef(false);
+
+  useEffect(() => {
+    if (!user?.id) return;
+    celebratedIdsRef.current = loadCelebratedGoalIds(user.id);
+  }, [user?.id]);
+
+  useEffect(() => {
+    if (!user?.id || loading) return;
+
+    const completeNow = goals.filter(isGoalComplete);
+    const completeIds = new Set(completeNow.map((g) => g.id));
+
+    if (!goalsInitializedRef.current) {
+      goalsInitializedRef.current = true;
+      let backfilled = false;
+      for (const goal of completeNow) {
+        if (celebratedIdsRef.current.has(goal.id)) continue;
+        celebratedIdsRef.current.add(goal.id);
+        backfilled = true;
+      }
+      if (backfilled) saveCelebratedGoalIds(user.id, celebratedIdsRef.current);
+      prevCompleteRef.current = completeIds;
+      return;
+    }
+
+    for (const goal of completeNow) {
+      if (prevCompleteRef.current.has(goal.id) || celebratedIdsRef.current.has(goal.id)) continue;
+      celebratedIdsRef.current.add(goal.id);
+      saveCelebratedGoalIds(user.id, celebratedIdsRef.current);
+      setCelebratingGoal(goal);
+      break;
+    }
+
+    prevCompleteRef.current = completeIds;
+  }, [goals, user?.id, loading]);
 
 
   const totalStreak = goals.reduce((max, g) => Math.max(max, g.streak), 0);
   const totalHoursThisMonth = goals.reduce((sum, g) => {
-    const thisMonth = new Date().toISOString().slice(0, 7);
+    const thisMonth = localMonthString();
     const monthLogs = g.logs.filter((l) => l.log_date.startsWith(thisMonth));
     return sum + monthLogs.reduce((s, l) => s + Number(l.hours_logged), 0);
   }, 0);
@@ -359,6 +504,7 @@ export default function Goals() {
             title: g.title,
             category: g.category,
             target_hours: g.target_hours,
+            target_unit: g.target_unit,
             totalLogged: g.totalLogged,
             goal_type: g.goal_type,
           })),
@@ -373,7 +519,7 @@ export default function Goals() {
         if (data.suggestions.length === 0) {
           toast("No free gaps found — your day is packed!", { icon: "📋" });
         } else {
-          toast.success(`Found ${data.suggestions.length} time blocks for your goals!`);
+          toast.success(`Found ${data.suggestions.length} open blocks for a potential route!`);
         }
       }
     } catch (e: any) {
@@ -384,9 +530,40 @@ export default function Goals() {
     }
   };
 
-  const handleAcceptSuggestion = (s: GoalSuggestion) => {
-    toast.success(`"${s.activity}" at ${s.startTime} noted! Log time when done.`, { icon: "✅" });
-    setSuggestions((prev) => prev.filter((x) => x !== s));
+  const handleAcceptSuggestion = async (s: GoalSuggestion) => {
+    try {
+      const result = await loadTodaySchedule();
+      const existing = result?.schedule ?? [];
+      const settings = result?.settings ?? defaultScheduleSettings;
+      const [newItem] = goalSuggestionsToScheduleItems([s]);
+      const merged = mergeScheduleItems(existing, [newItem]);
+      await saveSchedule(merged, settings);
+      toast.success(`Added "${s.activity}" at ${s.startTime} to today's schedule!`, { icon: "✅" });
+      setSuggestions((prev) => prev.filter((x) => x !== s));
+    } catch (e) {
+      console.error("Failed to merge goal suggestion:", e);
+      toast.error("Could not add goal block to your schedule");
+    }
+  };
+
+  const handleIntegrateAllSuggestions = async () => {
+    if (suggestions.length === 0) return;
+    setIntegratingSuggestions(true);
+    try {
+      const result = await loadTodaySchedule();
+      const existing = result?.schedule ?? [];
+      const settings = result?.settings ?? defaultScheduleSettings;
+      const newItems = goalSuggestionsToScheduleItems(suggestions);
+      const merged = mergeScheduleItems(existing, newItems);
+      await saveSchedule(merged, settings);
+      toast.success(`Added ${newItems.length} goal blocks to today's main schedule!`, { icon: "✅" });
+      setSuggestions([]);
+    } catch (e) {
+      console.error("Failed to integrate goal route:", e);
+      toast.error("Could not add this route to your schedule");
+    } finally {
+      setIntegratingSuggestions(false);
+    }
   };
 
   const handleDismissSuggestion = (idx: number) => {
@@ -396,6 +573,7 @@ export default function Goals() {
   return (
     <div className="min-h-screen w-full bg-[#fdfaff] p-4 md:p-8">
       <SEO title="Long-Term Goals — TimeBunny" description="Track Atomic-Habits-style long-term goals and let TimeBunny suggest tasks that fill the gaps in your day." path="/goals" />
+      <GoalCarrotCelebration goal={celebratingGoal} onDismiss={() => setCelebratingGoal(null)} />
 
       <div className="max-w-2xl w-full mx-auto space-y-8">
         {/* Top nav */}
@@ -406,17 +584,28 @@ export default function Goals() {
               BACK
             </Button>
           </Link>
-          {goals.length > 0 && (
-            <button
-              onClick={handleFindGaps}
-              disabled={loadingSuggestions}
-              className="flex items-center gap-2 text-[10px] px-3 py-2 bg-white border-2 border-[#ddd6fe] text-[#5b21b6] hover:bg-purple-50 disabled:opacity-50 shadow-[2px_2px_0px_#ddd6fe]"
-              style={PIXEL}
-            >
-              <Wand2 className={`w-3.5 h-3.5 ${loadingSuggestions ? "animate-spin" : ""}`} />
-              {loadingSuggestions ? "FINDING..." : "FIND GAPS"}
-            </button>
-          )}
+          <div className="flex items-center gap-2">
+            <Link to="/badges">
+              <button
+                className="flex items-center gap-2 text-[10px] px-3 py-2 bg-white border-2 border-[#ddd6fe] text-[#5b21b6] hover:bg-purple-50 shadow-[2px_2px_0px_#ddd6fe]"
+                style={PIXEL}
+              >
+                <Award className="w-3.5 h-3.5 text-[#2dd4bf]" />
+                BADGES
+              </button>
+            </Link>
+            {goals.length > 0 && (
+              <button
+                onClick={handleFindGaps}
+                disabled={loadingSuggestions}
+                className="flex items-center gap-2 text-[10px] px-3 py-2 bg-white border-2 border-[#ddd6fe] text-[#5b21b6] hover:bg-purple-50 disabled:opacity-50 shadow-[2px_2px_0px_#ddd6fe]"
+                style={PIXEL}
+              >
+                <Wand2 className={`w-3.5 h-3.5 ${loadingSuggestions ? "animate-spin" : ""}`} />
+                {loadingSuggestions ? "FINDING..." : "FIND GAPS"}
+              </button>
+            )}
+          </div>
         </div>
 
         {/* Header */}
@@ -436,7 +625,9 @@ export default function Goals() {
           suggestions={suggestions}
           onDismiss={handleDismissSuggestion}
           onAccept={handleAcceptSuggestion}
+          onIntegrateAll={handleIntegrateAllSuggestions}
           onClose={() => setSuggestions([])}
+          integrating={integratingSuggestions}
         />
 
         {/* Stats */}

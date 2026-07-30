@@ -1,14 +1,34 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import { Sparkles, Moon, Sun, Coffee, Battery, BatteryLow, Heart, Zap, Clock, Calendar, X, PlayCircle, Plus, AlertTriangle, Trash2, Loader2, CheckCircle2, PartyPopper, ArrowRight, ArrowLeft, Search, Save, Pencil } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { UserSettings, EnergyLevel, StressLevel, ScheduleItem } from "@/types/schedule";
+import { UserSettings, EnergyLevel, StressLevel, ScheduleItem, DEFAULT_SCHEDULE_SUIT } from "@/types/schedule";
 import CalendarImportModal, { CalendarEvent } from "./CalendarImportModal";
 import JournalBookModal from "./JournalBookModal";
+import type { AnalyzedTask } from "@/components/CalendarAnalysisModal";
+import {
+  buildCalendarAnalysisPrompt,
+  buildVibeChecksPrompt,
+  type ScheduleGenerationContext,
+} from "@/lib/scheduleOptimizationContext";
+import type { VibeCheckEntry } from "@/hooks/useSchedulePersistence";
 import { getFormattedDate, getTimeOfDayGreeting, getDayName } from "@/lib/dayGreetings";
 import { useAuth } from "@/hooks/useAuth";
+import { useGoals } from "@/hooks/useGoals";
 import { useSchedulePersistence, saveScheduleSnapshot } from "@/hooks/useSchedulePersistence";
+import { buildGoalsSchedulePrompt, formatGoalsForSchedule, getItemDurationMinutes, resolveGoalIdFromItem } from "@/lib/goalsSchedule";
+import { CALENDAR_SYNCED_EVENT } from "@/lib/calendarSync";
+import { CRITICAL_ONLY_COMFORT_MESSAGES } from "@/lib/vibeStressDetection";
+import {
+  isCriticalScheduleTask,
+  pickCriticalVictoryMessage,
+  playCompletionDing,
+  playCriticalVictoryFanfare,
+} from "@/lib/pomodoroBunny";
+import PomodoroBunnyCompanion from "@/components/PomodoroBunnyCompanion";
+import { loadEnergyStressSpeechBubblePosition } from "@/lib/energyStressSpeechBubblePosition";
+import { loadJournalSpeechBubblePosition } from "@/lib/journalSpeechBubblePosition";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
 import libraryBg from "@/assets/library-background.png";
@@ -29,27 +49,67 @@ interface TaskEntry {
 interface WizardInterfaceProps {
   settings: UserSettings;
   onSettingsChange: (settings: UserSettings) => void;
-  onComplete: (tasks: string) => void;
+  onComplete: (tasks: string, context?: ScheduleGenerationContext) => void;
   isLoading: boolean;
   generatedSchedule: ScheduleItem[];
   initialScene?: Scene;
   onBackFromInitial?: () => void;
-  onStartFocus?: () => void;
   onUpdateSchedule?: () => void;
   onScheduleChange?: (items: ScheduleItem[]) => void;
+  /** Neurosymbolic calendar analysis from analyze-calendar-tasks */
+  analyzedCalendarTasks?: AnalyzedTask[];
   /** When true, cozy journal is mandatory: Skip is hidden and bunny insists on a journal entry. */
   requireJournal?: boolean;
+  /** Show bunny comfort dialogue (e.g. after critical-only vibe check). */
+  comfortMode?: "critical_only" | null;
+  onComfortDismiss?: () => void;
 }
 
 // ─── SCENE DEFINITIONS ───
 // Each scene has: background image, bunny position, bunny size, dialogue messages
 type Scene = "library" | "cozy" | "energy" | "stress" | "schedule";
 
+/** Journal / energy / stress — +2 paces up & right, midsize scale on chair */
+const WIREframe_CHAIR_BUNNY = {
+  position: "bottom-[calc(17%+4rem)] left-[calc(73%+4rem)] -translate-x-1/2",
+  size: "w-[28rem] sm:w-[32rem] md:w-[36rem] lg:w-[38rem]",
+  scale: "origin-bottom scale-[1.75]",
+  backgroundClass: "object-cover object-center",
+} as const;
+
+const COZY_CHAIR_BUNNY = {
+  position: "bottom-[calc(17%+1rem)] left-[calc(73%+4rem)] -translate-x-1/2",
+  size: WIREframe_CHAIR_BUNNY.size,
+  scale: WIREframe_CHAIR_BUNNY.scale,
+  backgroundClass: "object-cover object-right-bottom",
+} as const;
+
+/** Energy / stress / schedule — chair anchor on schedule background */
+const ENERGY_STRESS_CHAIR_BUNNY = {
+  position: "bottom-[calc(17%+2rem)] left-[calc(73%+4rem)] -translate-x-1/2",
+  size: WIREframe_CHAIR_BUNNY.size,
+  scale: "origin-bottom scale-[2.25]",
+  backgroundClass: WIREframe_CHAIR_BUNNY.backgroundClass,
+} as const;
+
+/** Speech bubble — floated left of bunny head (scaled bunny does not affect layout) */
+const ENERGY_STRESS_SPEECH_BUBBLE_DEFAULT_POS =
+  "bottom-[calc(72%+2rem)] -left-[16rem] sm:-left-[22rem] md:-left-[26rem]";
+
+const JOURNAL_SPEECH_BUBBLE_DEFAULT_POS =
+  "bottom-[72%] -left-[18rem] sm:-left-[22rem] md:-left-[26rem]";
+
+const WIREframe_SPEECH_BUBBLE = {
+  journal: `absolute z-50 pointer-events-none w-60 sm:w-72 ${JOURNAL_SPEECH_BUBBLE_DEFAULT_POS}`,
+  energyStress: `absolute z-50 pointer-events-none w-60 sm:w-72 ${ENERGY_STRESS_SPEECH_BUBBLE_DEFAULT_POS}`,
+} as const;
+
 const SCENE_CONFIG = {
   library: {
     background: libraryBg,
     bunnyPosition: "bottom-[0%] right-[-1%]",
     bunnySize: "w-[22rem]",
+    backgroundClass: "object-cover object-center",
     hideBubble: false,
     messages: [
       `${getTimeOfDayGreeting()}! It's ${getFormattedDate()} 🗓️`,
@@ -59,8 +119,10 @@ const SCENE_CONFIG = {
   },
   cozy: {
     background: cozyBg,
-    bunnyPosition: "bottom-[16%] right-[-10%]",
-    bunnySize: "w-[28rem]",
+    bunnyPosition: COZY_CHAIR_BUNNY.position,
+    bunnySize: COZY_CHAIR_BUNNY.size,
+    bunnyScale: COZY_CHAIR_BUNNY.scale,
+    backgroundClass: COZY_CHAIR_BUNNY.backgroundClass,
     hideBubble: false,
     messages: [
       "Great! Now that I have a better understanding of what your day is like, let's get started!",
@@ -71,8 +133,10 @@ const SCENE_CONFIG = {
   },
   energy: {
     background: scheduleBg,
-    bunnyPosition: "bottom-[28%] right-[-8%]",
-    bunnySize: "w-[28rem]",
+    bunnyPosition: ENERGY_STRESS_CHAIR_BUNNY.position,
+    bunnySize: ENERGY_STRESS_CHAIR_BUNNY.size,
+    bunnyScale: ENERGY_STRESS_CHAIR_BUNNY.scale,
+    backgroundClass: ENERGY_STRESS_CHAIR_BUNNY.backgroundClass,
     hideBubble: false,
     messages: [
       "Wow! You have a lot on your plate dear, what is your energy level?",
@@ -80,8 +144,10 @@ const SCENE_CONFIG = {
   },
   stress: {
     background: scheduleBg,
-    bunnyPosition: "bottom-[28%] right-[-8%]",
-    bunnySize: "w-[28rem]",
+    bunnyPosition: ENERGY_STRESS_CHAIR_BUNNY.position,
+    bunnySize: ENERGY_STRESS_CHAIR_BUNNY.size,
+    bunnyScale: ENERGY_STRESS_CHAIR_BUNNY.scale,
+    backgroundClass: ENERGY_STRESS_CHAIR_BUNNY.backgroundClass,
     hideBubble: false,
     messages: [
       "How is your stress level?",
@@ -89,8 +155,10 @@ const SCENE_CONFIG = {
   },
   schedule: {
     background: scheduleBg,
-    bunnyPosition: "bottom-[26%] right-[-7%] lg:right-[9%]",
-    bunnySize: "w-[26rem] lg:w-[44rem]",
+    bunnyPosition: ENERGY_STRESS_CHAIR_BUNNY.position,
+    bunnySize: ENERGY_STRESS_CHAIR_BUNNY.size,
+    bunnyScale: ENERGY_STRESS_CHAIR_BUNNY.scale,
+    backgroundClass: ENERGY_STRESS_CHAIR_BUNNY.backgroundClass,
     hideBubble: true,
     messages: [],
   },
@@ -98,9 +166,11 @@ const SCENE_CONFIG = {
 
 type WizardStep = "greeting" | "mood" | "stress" | "sleep" | "breaks" | "tasks";
 
-const WizardInterface = ({ settings, onSettingsChange, onComplete, isLoading, generatedSchedule, initialScene = "library", onBackFromInitial, onStartFocus, onUpdateSchedule, onScheduleChange, requireJournal = false }: WizardInterfaceProps) => {
+const WizardInterface = ({ settings, onSettingsChange, onComplete, isLoading, generatedSchedule, initialScene = "library", onBackFromInitial, onUpdateSchedule, onScheduleChange, analyzedCalendarTasks = [], requireJournal = false, comfortMode = null, onComfortDismiss }: WizardInterfaceProps) => {
   const navigate = useNavigate();
   const { user } = useAuth();
+  const { goals, addGoalProgress } = useGoals();
+  const formattedGoals = useMemo(() => formatGoalsForSchedule(goals), [goals]);
   const { saveJournal, loadTodaySchedule, saveSchedule } = useSchedulePersistence(user?.id);
   // ─── SCENE STATE (single source of truth) ───
   const [scene, setScene] = useState<Scene>(initialScene);
@@ -110,8 +180,65 @@ const WizardInterface = ({ settings, onSettingsChange, onComplete, isLoading, ge
   const [taskEntries, setTaskEntries] = useState<TaskEntry[]>([
     { id: "1", title: "", duration: "", deadline: "", priority: "medium" },
   ]);
+
+  useEffect(() => {
+    if (formattedGoals.length === 0) return;
+    setTaskEntries((prev) => {
+      const existingGoalIds = new Set(
+        prev.filter((t) => t.id.startsWith("goal-")).map((t) => t.id),
+      );
+      const goalTasks: TaskEntry[] = formattedGoals
+        .filter((g) => !existingGoalIds.has(`goal-${g.id}`))
+        .map((g) => ({
+          id: `goal-${g.id}`,
+          title: `🎯 ${g.title}`,
+          duration: `${g.suggestedDailyMinutes}m`,
+          deadline: "",
+          priority: g.remainingHours > g.target_hours * 0.5 ? "high" : "medium",
+        }));
+      if (goalTasks.length === 0) return prev;
+      const onlyEmptyDefault =
+        prev.length === 1 && !prev[0].title.trim() && !prev[0].duration && !prev[0].deadline;
+      return onlyEmptyDefault ? [...goalTasks, ...prev] : [...goalTasks, ...prev];
+    });
+  }, [formattedGoals]);
   const [isCalendarModalOpen, setIsCalendarModalOpen] = useState(false);
   const [importedEvents, setImportedEvents] = useState<CalendarEvent[]>([]);
+  const [persistedCalendarAnalysis, setPersistedCalendarAnalysis] = useState<AnalyzedTask[]>([]);
+  const [persistedVibeChecks, setPersistedVibeChecks] = useState<VibeCheckEntry[]>([]);
+
+  const calendarAnalysis = useMemo(() => {
+    if (analyzedCalendarTasks.length > 0) return analyzedCalendarTasks;
+    return persistedCalendarAnalysis;
+  }, [analyzedCalendarTasks, persistedCalendarAnalysis]);
+
+  useEffect(() => {
+    loadTodaySchedule().then((session) => {
+      if (session?.calendarImport?.length) {
+        setPersistedCalendarAnalysis(session.calendarImport);
+      }
+      if (session?.vibeChecks?.length) {
+        setPersistedVibeChecks(session.vibeChecks);
+      }
+    });
+  }, [loadTodaySchedule]);
+
+  useEffect(() => {
+    const onSynced = (event: Event) => {
+      const tasks = (event as CustomEvent<{ tasks: AnalyzedTask[] }>).detail?.tasks;
+      if (tasks?.length) {
+        setPersistedCalendarAnalysis(tasks);
+      }
+    };
+    window.addEventListener(CALENDAR_SYNCED_EVENT, onSynced);
+    return () => window.removeEventListener(CALENDAR_SYNCED_EVENT, onSynced);
+  }, []);
+
+  useEffect(() => {
+    if (analyzedCalendarTasks.length > 0) {
+      setPersistedCalendarAnalysis(analyzedCalendarTasks);
+    }
+  }, [analyzedCalendarTasks]);
   const [activeBookIndex, setActiveBookIndex] = useState<number | null>(null);
   const [showSpeechBubble, setShowSpeechBubble] = useState(false);
   const [typedText, setTypedText] = useState("");
@@ -122,6 +249,8 @@ const WizardInterface = ({ settings, onSettingsChange, onComplete, isLoading, ge
   const [isJournalFocused, setIsJournalFocused] = useState(false);
   const [isBookOpen, setIsBookOpen] = useState(false);
   const [draftResumed, setDraftResumed] = useState(false);
+  const energyStressBubblePos = useMemo(() => loadEnergyStressSpeechBubblePosition(), []);
+  const journalBubblePos = useMemo(() => loadJournalSpeechBubblePosition(), []);
 
   // Local draft key so unsent text survives exits even before Supabase autosave fires
   const draftKey = user ? `journal-draft-${user.id}` : "journal-draft-anon";
@@ -173,50 +302,25 @@ const WizardInterface = ({ settings, onSettingsChange, onComplete, isLoading, ge
   const [timerRunning, setTimerRunning] = useState(false);
   const [timerDuration, setTimerDuration] = useState(0); // total seconds
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const typeIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const pendingSpeechTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const comfortMessageIndexRef = useRef(0);
+  const comfortIntroShownRef = useRef(false);
   const [showCelebration, setShowCelebration] = useState(false);
   const [celebrationMsg, setCelebrationMsg] = useState("");
+  const [celebrationIsCritical, setCelebrationIsCritical] = useState(false);
+  const [criticalVictoryTick, setCriticalVictoryTick] = useState(0);
   const [completedTasks, setCompletedTasks] = useState<Set<string>>(new Set());
 
   const celebrationMessages = [
-    "You crushed it! 🎉 On to the next one~",
-    "Amazing work! You're unstoppable! ✨",
-    "That's how it's done! Keep this energy! 🌟",
-    "So proud of you! One step closer to greatness! ♡",
-    "Brilliant! You're on fire today! 🔥",
-    "Task conquered! You're a legend! ✧",
-    "Yay! Another one done! Let's keep rolling~ 🎊",
+    "You crushed it! On to the next one~",
+    "Amazing work! You're unstoppable!",
+    "That's how it's done! Keep this energy!",
+    "So proud of you! One step closer to greatness!",
+    "Brilliant! You're on fire today!",
+    "Task conquered! You're a legend!",
+    "Yay! Another one done! Let's keep rolling~",
   ];
-
-  const playCompletionDing = () => {
-    const ctx = new AudioContext();
-    const now = ctx.currentTime;
-    [1318, 1568, 2093, 2637].forEach((freq, i) => {
-      const osc = ctx.createOscillator();
-      const gain = ctx.createGain();
-      osc.connect(gain);
-      gain.connect(ctx.destination);
-      osc.type = "sine";
-      const offset = i * 0.1;
-      osc.frequency.setValueAtTime(freq, now + offset);
-      gain.gain.setValueAtTime(0.25, now + offset);
-      gain.gain.exponentialRampToValueAtTime(0.001, now + offset + 0.8);
-      osc.start(now + offset);
-      osc.stop(now + offset + 0.8);
-    });
-    [3951, 4186].forEach((freq, i) => {
-      const osc = ctx.createOscillator();
-      const gain = ctx.createGain();
-      osc.connect(gain);
-      gain.connect(ctx.destination);
-      osc.type = "triangle";
-      const offset = 0.3 + i * 0.15;
-      osc.frequency.setValueAtTime(freq, now + offset);
-      gain.gain.setValueAtTime(0.1, now + offset);
-      gain.gain.exponentialRampToValueAtTime(0.001, now + offset + 0.5);
-      osc.start(now + offset);
-      osc.stop(now + offset + 0.5);
-    });
-  };
 
   // Timer countdown effect
   useEffect(() => {
@@ -252,6 +356,25 @@ const WizardInterface = ({ settings, onSettingsChange, onComplete, isLoading, ge
     setTimerRunning(true);
   };
 
+  const getCurrentScheduleTask = (items: ScheduleItem[]): ScheduleItem | null => {
+    if (items.length === 0) return null;
+    const sorted = [...items].sort((a, b) => a.time.localeCompare(b.time));
+    const now = new Date();
+    const currentMinutes = now.getHours() * 60 + now.getMinutes();
+    let best = sorted[0];
+    for (const item of sorted) {
+      const [h, m] = item.time.split(":").map(Number);
+      if (h * 60 + m <= currentMinutes) best = item;
+      else break;
+    }
+    return best;
+  };
+
+  const handleStartFocusTimer = () => {
+    const task = getCurrentScheduleTask(generatedSchedule);
+    if (task) startTask(task);
+  };
+
   const stopTask = () => {
     setActiveTask(null);
     setTimerRunning(false);
@@ -261,16 +384,44 @@ const WizardInterface = ({ settings, onSettingsChange, onComplete, isLoading, ge
 
   const completeCurrentTask = useCallback(() => {
     if (!activeTask) return;
-    playCompletionDing();
+
+    const isCritical = isCriticalScheduleTask(activeTask, calendarAnalysis, comfortMode);
+    if (isCritical) {
+      playCriticalVictoryFanfare();
+      setCriticalVictoryTick((t) => t + 1);
+      setCelebrationMsg(pickCriticalVictoryMessage());
+      setCelebrationIsCritical(true);
+    } else {
+      playCompletionDing();
+      setCelebrationMsg(celebrationMessages[Math.floor(Math.random() * celebrationMessages.length)]);
+      setCelebrationIsCritical(false);
+    }
+
+    const goalId = resolveGoalIdFromItem(activeTask, goals);
+    if (goalId && user) {
+      const elapsedSec = Math.max(0, timerDuration - timerSeconds);
+      const scheduledMinutes = getItemDurationMinutes(activeTask, generatedSchedule);
+      const hours =
+        elapsedSec >= 60 ? elapsedSec / 3600 : Math.max(scheduledMinutes / 60, 0.25);
+      addGoalProgress(goalId, hours, `Completed: ${activeTask.title}`, true);
+      toast.success(`+${Math.round(hours * 60)} min logged toward your goal 🎯`);
+    }
+
     setCompletedTasks(prev => new Set(prev).add(activeTask.id));
-    const msg = celebrationMessages[Math.floor(Math.random() * celebrationMessages.length)];
-    setCelebrationMsg(msg);
-    setShowCelebration(true);
     setTimerRunning(false);
     if (timerRef.current) clearInterval(timerRef.current);
 
+    const celebrationMs = isCritical ? 5500 : 4000;
+    const showOverlay = () => setShowCelebration(true);
+    if (isCritical) {
+      setTimeout(showOverlay, 1100);
+    } else {
+      showOverlay();
+    }
+
     setTimeout(() => {
       setShowCelebration(false);
+      setCelebrationIsCritical(false);
       // Auto-advance to next task
       const sorted = [...generatedSchedule].sort((a, b) => a.time.localeCompare(b.time));
       const currentIdx = sorted.findIndex(s => s.id === activeTask.id);
@@ -279,8 +430,8 @@ const WizardInterface = ({ settings, onSettingsChange, onComplete, isLoading, ge
       } else {
         stopTask();
       }
-    }, 4000);
-  }, [activeTask, generatedSchedule]);
+    }, celebrationMs);
+  }, [activeTask, generatedSchedule, goals, user, timerDuration, timerSeconds, addGoalProgress, calendarAnalysis, comfortMode]);
 
   const formatTimer = (sec: number) => {
     const m = Math.floor(sec / 60);
@@ -288,15 +439,32 @@ const WizardInterface = ({ settings, onSettingsChange, onComplete, isLoading, ge
     return `${m.toString().padStart(2, "0")}:${s.toString().padStart(2, "0")}`;
   };
 
-  // Auto-show/replace bunny message on schedule scene
   useEffect(() => {
-    if (scene === "schedule") {
-      // Immediately clear the previous scene's bubble (e.g. stress question)
+    if (scene === "schedule" && comfortMode !== "critical_only") {
+      if (typeIntervalRef.current) {
+        clearInterval(typeIntervalRef.current);
+        typeIntervalRef.current = null;
+      }
+      if (pendingSpeechTimeoutRef.current) {
+        clearTimeout(pendingSpeechTimeoutRef.current);
+        pendingSpeechTimeoutRef.current = null;
+      }
+      setIsAutoAdvancePending(false);
+      setIsTyping(false);
       setTypedText("");
       setBubbleClickCount(0);
       setShowSpeechBubble(false);
     }
-  }, [scene]);
+  }, [scene, comfortMode]);
+
+  useEffect(
+    () => () => {
+      if (typeIntervalRef.current) clearInterval(typeIntervalRef.current);
+      if (pendingSpeechTimeoutRef.current) clearTimeout(pendingSpeechTimeoutRef.current);
+    },
+    [],
+  );
+
   const nowStr = (() => {
     const n = new Date();
     return `${n.getHours().toString().padStart(2, "0")}:${n.getMinutes().toString().padStart(2, "0")}`;
@@ -304,6 +472,16 @@ const WizardInterface = ({ settings, onSettingsChange, onComplete, isLoading, ge
   const [startTime, setStartTime] = useState(nowStr);
 
   const config = SCENE_CONFIG[scene];
+  const isChairScene = scene === "cozy" || scene === "energy" || scene === "stress" || scene === "schedule";
+  const isWireframeChairScene = scene === "cozy" || scene === "energy" || scene === "stress";
+  const isEnergyStressScene = scene === "energy" || scene === "stress";
+  const isJournalScene = scene === "cozy";
+  const wireframeSpeechBubbleClass = isJournalScene
+    ? WIREframe_SPEECH_BUBBLE.journal
+    : isEnergyStressScene
+      ? WIREframe_SPEECH_BUBBLE.energyStress
+      : undefined;
+  const bunnyScaleClass = "bunnyScale" in config ? (config as { bunnyScale?: string }).bunnyScale : undefined;
 
 
   const updateSetting = <K extends keyof UserSettings>(key: K, value: UserSettings[K]) => {
@@ -311,31 +489,92 @@ const WizardInterface = ({ settings, onSettingsChange, onComplete, isLoading, ge
   };
 
   // ─── TYPEWRITER HELPER ───
-  const typeMessage = (msg: string, onDone?: () => void) => {
+  const clearSpeechTimers = () => {
+    if (typeIntervalRef.current) {
+      clearInterval(typeIntervalRef.current);
+      typeIntervalRef.current = null;
+    }
+    if (pendingSpeechTimeoutRef.current) {
+      clearTimeout(pendingSpeechTimeoutRef.current);
+      pendingSpeechTimeoutRef.current = null;
+    }
+  };
+
+  const typeMessage = useCallback((msg: string, onDone?: () => void) => {
+    if (typeIntervalRef.current) {
+      clearInterval(typeIntervalRef.current);
+      typeIntervalRef.current = null;
+    }
+    if (!msg) {
+      setTypedText("");
+      setIsTyping(false);
+      onDone?.();
+      return;
+    }
     setIsTyping(true);
-    let i = 0;
-    // Set first character immediately to avoid blank flicker
+    let i = 1;
     setTypedText(msg.slice(0, 1));
-    i = 1;
     if (msg.length <= 1) {
       setIsTyping(false);
       onDone?.();
       return;
     }
-    const interval = setInterval(() => {
+    typeIntervalRef.current = setInterval(() => {
       i++;
       setTypedText(msg.slice(0, i));
       if (i >= msg.length) {
-        clearInterval(interval);
+        if (typeIntervalRef.current) {
+          clearInterval(typeIntervalRef.current);
+          typeIntervalRef.current = null;
+        }
         setIsTyping(false);
         onDone?.();
       }
     }, 40);
-  };
+  }, []);
+
+  const showBunnyMessage = useCallback(
+    (msg: string, onDone?: () => void) => {
+      clearSpeechTimers();
+      setIsAutoAdvancePending(false);
+      setBubbleClickCount(1);
+      setShowSpeechBubble(true);
+      typeMessage(msg, onDone);
+    },
+    [typeMessage],
+  );
+
+  // Auto-show bunny comfort when entering critical-only schedule mode
+  useEffect(() => {
+    if (scene !== "schedule" || comfortMode !== "critical_only") {
+      comfortIntroShownRef.current = false;
+      return;
+    }
+    if (comfortIntroShownRef.current) return;
+    if (isLoading && generatedSchedule.length === 0) return;
+
+    comfortIntroShownRef.current = true;
+    comfortMessageIndexRef.current = 0;
+    showBunnyMessage(CRITICAL_ONLY_COMFORT_MESSAGES[0]);
+  }, [scene, comfortMode, isLoading, generatedSchedule.length, showBunnyMessage]);
+
+  useEffect(() => {
+    if (comfortMode !== "critical_only") comfortIntroShownRef.current = false;
+  }, [comfortMode]);
+
+  const scheduleSpeech = useCallback((fn: () => void, delayMs: number) => {
+    if (pendingSpeechTimeoutRef.current) {
+      clearTimeout(pendingSpeechTimeoutRef.current);
+    }
+    pendingSpeechTimeoutRef.current = setTimeout(() => {
+      pendingSpeechTimeoutRef.current = null;
+      fn();
+    }, delayMs);
+  }, []);
 
   const handleCalendarImport = (events: CalendarEvent[]) => {
     setImportedEvents(events);
-    // Transition from library → cozy scene
+    clearSpeechTimers();
     setScene("cozy");
     // Reset speech bubble state for new scene
     setShowSpeechBubble(false);
@@ -415,14 +654,11 @@ const WizardInterface = ({ settings, onSettingsChange, onComplete, isLoading, ge
     if (detectDistress(journalText)) {
       const msg = encouragementMessages[Math.floor(Math.random() * encouragementMessages.length)];
       setScene("energy");
-      setBubbleClickCount(1);
-      setShowSpeechBubble(true);
-      typeMessage(msg, () => {
-        // After encouragement finishes typing, wait then show energy question
+      showBunnyMessage(msg, () => {
         setIsAutoAdvancePending(true);
-        setTimeout(() => {
+        scheduleSpeech(() => {
           setIsAutoAdvancePending(false);
-          setBubbleClickCount(prev => prev + 1);
+          setBubbleClickCount(2);
           typeMessage("Now, let's take care of you. What is your energy level?");
         }, 3000);
       });
@@ -431,9 +667,7 @@ const WizardInterface = ({ settings, onSettingsChange, onComplete, isLoading, ge
 
     // No distress — normal flow
     setScene("energy");
-    setBubbleClickCount(1);
-    setShowSpeechBubble(true);
-    typeMessage("How is your energy level?");
+    showBunnyMessage("How is your energy level?");
   };
 
   const handleSaveSchedule = async () => {
@@ -472,13 +706,25 @@ const WizardInterface = ({ settings, onSettingsChange, onComplete, isLoading, ge
         ).join('\n')}\n\nPlease include these fixed events in the final schedule output and fill the gaps between them with my tasks.`
       : '';
 
+    const calendarAnalysisPrompt = buildCalendarAnalysisPrompt(calendarAnalysis);
+    const vibeChecksPrompt = buildVibeChecksPrompt(persistedVibeChecks);
+
     const startNote = `\n\nSchedule starts NOW at ${startTime} (current real time). Only schedule tasks from this time onwards, not from wake time.`;
 
     const journalNote = journalText.trim()
       ? `\n\nHere's what the user wrote about their day:\n"${journalText.trim()}"\nPlease incorporate any mentioned tasks, commitments, or context into the schedule.`
-      : '';
+      : "";
+
+    const goalsPrompt = buildGoalsSchedulePrompt(formattedGoals);
     
-    onComplete(`My tasks:\n${tasksText}${deadlineWarning}${eventsList}${journalNote}${startNote}\n\n${breakText}`);
+    onComplete(
+      `My tasks:\n${tasksText}${deadlineWarning}${eventsList}${calendarAnalysisPrompt}${vibeChecksPrompt}${journalNote}${goalsPrompt}${startNote}\n\n${breakText}`,
+      {
+        calendarAnalysis,
+        vibeChecks: persistedVibeChecks,
+        optimizeMode: "default",
+      },
+    );
   };
 
   const hasValidTasks = taskEntries.some(t => t.title.trim());
@@ -493,9 +739,24 @@ const WizardInterface = ({ settings, onSettingsChange, onComplete, isLoading, ge
   // ─── BUNNY CLICK HANDLER ───
   const handleBunnyClick = () => {
     if (isTyping || isAutoAdvancePending) return;
+    if (scene === "cozy" && isJournalFocused) return;
+    // Energy/stress use button-driven dialogue — ignore clicks to avoid message flicker
+    if (scene === "energy" || scene === "stress") return;
+
+    if (scene === "schedule" && comfortMode === "critical_only") {
+      const nextIndex =
+        (comfortMessageIndexRef.current + 1) % CRITICAL_ONLY_COMFORT_MESSAGES.length;
+      comfortMessageIndexRef.current = nextIndex;
+      setBubbleClickCount(nextIndex + 1);
+      showBunnyMessage(CRITICAL_ONLY_COMFORT_MESSAGES[nextIndex]);
+      return;
+    }
+
     if (config.hideBubble) {
+      clearSpeechTimers();
       setShowSpeechBubble(false);
       setTypedText("");
+      onComfortDismiss?.();
       return;
     }
 
@@ -522,7 +783,7 @@ const WizardInterface = ({ settings, onSettingsChange, onComplete, isLoading, ge
       // Auto-advance in cozy scene: "Life can get messy..." → 2s → "Here is a safe space..."
       if (scene === "cozy" && fullText === SCENE_CONFIG.cozy.messages[1]) {
         setIsAutoAdvancePending(true);
-        setTimeout(() => {
+        scheduleSpeech(() => {
           const autoMsg = SCENE_CONFIG.cozy.messages[2];
           setBubbleClickCount(prev => prev + 1);
           setIsAutoAdvancePending(false);
@@ -537,10 +798,10 @@ const WizardInterface = ({ settings, onSettingsChange, onComplete, isLoading, ge
       {/* Background image — driven by scene */}
       <AnimatePresence mode="wait">
         <motion.img
-          key={scene}
+          key={config.background}
           src={config.background}
           alt=""
-          className="absolute inset-0 w-full h-full object-cover"
+          className={`absolute inset-0 w-full h-full ${config.backgroundClass ?? "object-cover object-center"}`}
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
@@ -574,7 +835,7 @@ const WizardInterface = ({ settings, onSettingsChange, onComplete, isLoading, ge
       {/* Journal overlay — cozy scene only */}
       {scene === "cozy" && (
         <div
-          className="absolute inset-0 z-[15] cursor-text"
+          className={`absolute inset-0 ${isJournalFocused ? "z-[40]" : "z-[15]"} cursor-text`}
           onClick={() => setIsJournalFocused(true)}
         >
           <AnimatePresence>
@@ -589,6 +850,7 @@ const WizardInterface = ({ settings, onSettingsChange, onComplete, isLoading, ge
                 <div className="relative w-full h-full bg-card/90 backdrop-blur-md rounded-xl border border-primary/20 shadow-xl p-4">
                   <div className="absolute top-2 right-2 flex items-center gap-2 z-10">
                     <button
+                      type="button"
                       onClick={(e) => { e.stopPropagation(); setIsBookOpen(true); }}
                       className="text-muted-foreground hover:text-foreground"
                       aria-label="Search past entries"
@@ -597,6 +859,7 @@ const WizardInterface = ({ settings, onSettingsChange, onComplete, isLoading, ge
                       <Search className="w-4 h-4" />
                     </button>
                     <button
+                      type="button"
                       onClick={(e) => { e.stopPropagation(); setIsJournalFocused(false); }}
                       className="text-muted-foreground hover:text-foreground"
                       aria-label="Close journal"
@@ -628,9 +891,10 @@ const WizardInterface = ({ settings, onSettingsChange, onComplete, isLoading, ge
                     autoFocus
                   />
                   {journalText.trim() && (
-                    <div className="absolute bottom-3 left-4 right-4">
+                    <div className="absolute bottom-3 left-4 right-4 z-20">
                       <Button
-                        onClick={(e) => { e.stopPropagation(); handleComplete(); }}
+                        type="button"
+                        onClick={(e) => { e.stopPropagation(); e.preventDefault(); handleComplete(); }}
                         disabled={isLoading}
                         className="w-full text-lg"
                         size="lg"
@@ -742,19 +1006,15 @@ const WizardInterface = ({ settings, onSettingsChange, onComplete, isLoading, ge
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: 20 }}
-            className="absolute left-[2%] top-[24%] z-30 flex flex-col gap-5 sm:gap-6"
-
+            className="absolute left-[4%] top-[22%] z-10 flex flex-col gap-4 sm:gap-5"
           >
             {(["high", "standard", "low"] as const).map((level) => (
               <button
                 key={level}
                 onClick={() => {
                   updateSetting("energyLevel", level === "high" ? "motivated" : "unmotivated");
-                  // Transition to stress scene
                   setScene("stress");
-                  setBubbleClickCount(1);
-                  setShowSpeechBubble(true);
-                  typeMessage("How is your stress level?");
+                  showBunnyMessage("How is your stress level?");
                 }}
                 className="px-10 py-3 rounded-full cursor-pointer transition-all hover:scale-105 active:scale-95"
                 style={{ background: "hsl(197 71% 73%)" }}
@@ -775,7 +1035,7 @@ const WizardInterface = ({ settings, onSettingsChange, onComplete, isLoading, ge
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: 20 }}
-            className="absolute left-[2%] top-[26%] z-30 flex flex-col gap-5 sm:gap-6"
+            className="absolute left-[4%] top-[22%] z-10 flex flex-col gap-4 sm:gap-5"
           >
             {(["high", "average", "low"] as const).map((level) => (
               <button
@@ -791,10 +1051,8 @@ const WizardInterface = ({ settings, onSettingsChange, onComplete, isLoading, ge
                       "You're carrying a lot right now. Let's lighten the load together — I'll keep things manageable ✨",
                     ];
                     const msg = stressEncouragements[Math.floor(Math.random() * stressEncouragements.length)];
-                    setBubbleClickCount(1);
-                    setShowSpeechBubble(true);
-                    typeMessage(msg, () => {
-                      setTimeout(() => {
+                    showBunnyMessage(msg, () => {
+                      scheduleSpeech(() => {
                         submitSchedule();
                         setScene("schedule");
                       }, 2500);
@@ -802,6 +1060,7 @@ const WizardInterface = ({ settings, onSettingsChange, onComplete, isLoading, ge
                     return;
                   }
 
+                  clearSpeechTimers();
                   submitSchedule();
                   setScene("schedule");
                 }}
@@ -833,7 +1092,7 @@ const WizardInterface = ({ settings, onSettingsChange, onComplete, isLoading, ge
                 </p>
               </motion.div>
             ) : activeTask ? (
-              /* Timer view — active task with clock background */
+              <>
               <motion.div
                 initial={{ opacity: 0, scale: 0.95 }}
                 animate={{ opacity: 1, scale: 1 }}
@@ -1037,7 +1296,7 @@ const WizardInterface = ({ settings, onSettingsChange, onComplete, isLoading, ge
                     </button>
                   ) : null}
                   <button
-                    onClick={() => navigate("/vibe-check", { state: { fromPomodoro: true, schedule: generatedSchedule, backgroundTheme: settings.backgroundTheme } })}
+                    onClick={() => navigate("/vibe-check", { state: { fromPomodoro: true, schedule: generatedSchedule } })}
                     className="px-6 py-2 rounded-full transition-all hover:scale-105 active:scale-95 flex items-center gap-2 text-white"
                     style={{ background: "hsl(210 90% 55%)", fontFamily: "var(--font-body)" }}
                     title="Need a break? Feeling distracted or overwhelmed?"
@@ -1125,7 +1384,11 @@ const WizardInterface = ({ settings, onSettingsChange, onComplete, isLoading, ge
                         <img
                           src={bunnyMascot}
                           alt="Celebrating bunny"
-                          className="w-48 h-48 object-contain drop-shadow-xl pixel-img"
+                          className={`object-contain drop-shadow-xl pixel-img ${
+                            celebrationIsCritical
+                              ? "w-56 h-56 animate-bunny-victory"
+                              : "w-48 h-48"
+                          }`}
                           draggable={false}
                         />
                       </motion.div>
@@ -1136,17 +1399,25 @@ const WizardInterface = ({ settings, onSettingsChange, onComplete, isLoading, ge
                         transition={{ delay: 0.4 }}
                         className="text-center mt-4 px-8"
                       >
-                        <p className="text-2xl font-bold" style={{ fontFamily: "var(--font-body)", color: "hsl(280 40% 25%)" }}>
+                        <p
+                          className={`font-bold ${celebrationIsCritical ? "text-3xl" : "text-2xl"}`}
+                          style={{ fontFamily: "var(--font-body)", color: "hsl(280 40% 25%)" }}
+                        >
                           {celebrationMsg}
                         </p>
                         <p className="text-sm mt-2 opacity-70" style={{ fontFamily: "var(--font-body)", color: "hsl(280 40% 40%)" }}>
-                          Moving to next task...
+                          {celebrationIsCritical ? "Critical task complete — hero mode!" : "Moving to next task..."}
                         </p>
                       </motion.div>
                     </motion.div>
                   )}
                 </AnimatePresence>
               </motion.div>
+              <PomodoroBunnyCompanion
+                active={!!activeTask && !showCelebration}
+                victoryTrigger={criticalVictoryTick}
+              />
+              </>
             ) : (
               <div className="flex flex-col gap-3">
                 <div className="flex justify-between w-full gap-2">
@@ -1159,15 +1430,14 @@ const WizardInterface = ({ settings, onSettingsChange, onComplete, isLoading, ge
                     <Save className="w-4 h-4" />
                     Save Schedule
                   </button>
-                  {onStartFocus && (
-                    <button
-                      onClick={onStartFocus}
-                      className="px-5 py-2 rounded-full transition-all hover:scale-105 active:scale-95 shadow-md text-white font-semibold text-sm"
-                      style={{ background: "hsl(150 60% 45%)", fontFamily: "var(--font-body)" }}
-                    >
-                      Pomodoro Timer →
-                    </button>
-                  )}
+                  <button
+                    onClick={handleStartFocusTimer}
+                    disabled={generatedSchedule.length === 0}
+                    className="px-5 py-2 rounded-full transition-all hover:scale-105 active:scale-95 shadow-md text-white font-semibold text-sm disabled:opacity-50 disabled:pointer-events-none"
+                    style={{ background: "hsl(150 60% 45%)", fontFamily: "var(--font-body)" }}
+                  >
+                    Pomodoro Timer →
+                  </button>
                 </div>
                 {[...generatedSchedule].sort((a, b) => a.time.localeCompare(b.time)).map((item, index) => (
                   <motion.button
@@ -1295,7 +1565,7 @@ const WizardInterface = ({ settings, onSettingsChange, onComplete, isLoading, ge
                       id: `manual-${Date.now()}`,
                       title: "New task",
                       time: "12:00",
-                      suit: "hearts",
+                      suit: DEFAULT_SCHEDULE_SUIT,
                     },
                   ])
                 }
@@ -1332,26 +1602,42 @@ const WizardInterface = ({ settings, onSettingsChange, onComplete, isLoading, ge
       )}
 
       {/* Bunny mascot — position & size driven by scene config */}
-      <div className={`absolute z-20 transition-all duration-700 ${config.bunnyPosition}`}>
-        <div className="relative cursor-pointer" onClick={handleBunnyClick}>
+      {!(scene === "schedule" && activeTask) && (
+      <div
+        className={`absolute transition-all duration-700 ${config.bunnyPosition} ${
+          isChairScene ? "z-40 overflow-visible" : "z-20"
+        } ${scene === "cozy" && isJournalFocused ? "pointer-events-none" : ""}`}
+      >
+        <div
+          className={`relative cursor-pointer overflow-visible ${
+            isChairScene && !isWireframeChairScene ? "flex flex-col items-center" : ""
+          } ${isWireframeChairScene ? "max-w-none" : isChairScene ? "max-w-[38rem]" : ""}`}
+          onClick={handleBunnyClick}
+        >
           <AnimatePresence>
-            {showSpeechBubble && (
+            {showSpeechBubble && (comfortMode === "critical_only" || !config.hideBubble) && (
               <motion.div
-                initial={{ opacity: 0, scale: 0.8, y: 10 }}
+                key="bunny-speech"
+                initial={false}
                 animate={{ opacity: 1, scale: 1, y: 0 }}
-                exit={{ opacity: 0, scale: 0.8, y: 10 }}
-                className={`absolute z-30 ${
-                  scene === "stress"
-                    ? "-top-8 w-56 right-[61%]"
-                    : scene === "energy"
-                    ? "-top-8 w-64 right-[60%]"
-                    : scene === "schedule"
-                    ? "-top-16 w-48 right-[12%]"
-                    : "-top-16 w-72 sm:w-80 right-[60%]"
-                }`}
+                exit={{ opacity: 0, scale: 0.95, y: 6 }}
+                transition={{ duration: 0.2 }}
+                className={
+                  wireframeSpeechBubbleClass ??
+                  (isChairScene
+                    ? "z-50 pointer-events-none w-60 sm:w-72 order-first mb-2"
+                    : "z-50 pointer-events-none absolute -top-16 w-72 sm:w-80 right-[60%]")
+                }
+                style={
+                  isJournalScene && journalBubblePos
+                    ? { left: journalBubblePos.left, bottom: journalBubblePos.bottom }
+                    : isEnergyStressScene && energyStressBubblePos
+                      ? { left: energyStressBubblePos.left, bottom: energyStressBubblePos.bottom }
+                      : undefined
+                }
               >
                 <div
-                  className="relative bg-white p-5 shadow-xl"
+                  className="relative bg-white p-4 sm:p-5 shadow-xl"
                   style={{
                     borderRadius: "50%",
                     minHeight: "5.5rem",
@@ -1366,41 +1652,50 @@ const WizardInterface = ({ settings, onSettingsChange, onComplete, isLoading, ge
                     {isTyping && <span className="inline-block w-0.5 h-4 bg-primary animate-pulse ml-0.5 align-middle" />}
                   </p>
                 </div>
-                {/* Comic tail — point toward the bunny (static) */}
-                <div className="relative w-full h-12">
-                  <div className="absolute inset-0 z-10">
-                    {scene === "energy" ? (
-                      <>
-                        <div className="absolute top-2 w-4 h-4 bg-white border-2 rounded-full left-[40%]" style={{ borderColor: "hsl(280 40% 20%)" }} />
-                        <div className="absolute top-6 w-2.5 h-2.5 bg-white border-2 rounded-full left-[65%]" style={{ borderColor: "hsl(280 40% 20%)" }} />
-                        <div className="absolute top-10 w-1.5 h-1.5 bg-white border-2 rounded-full left-[90%]" style={{ borderColor: "hsl(280 40% 20%)" }} />
-                      </>
-                    ) : scene === "stress" ? (
-                      <>
-                        <div className="absolute top-2 w-4 h-4 bg-white border-2 rounded-full left-[45%]" style={{ borderColor: "hsl(280 40% 20%)" }} />
-                        <div className="absolute top-6 w-2.5 h-2.5 bg-white border-2 rounded-full left-[75%]" style={{ borderColor: "hsl(280 40% 20%)" }} />
-                        <div className="absolute top-10 w-1.5 h-1.5 bg-white border-2 rounded-full left-[105%]" style={{ borderColor: "hsl(280 40% 20%)" }} />
-                      </>
-                    ) : (
-                      <>
-                        <div className="absolute top-0 w-4 h-4 bg-white border-2 rounded-full left-[30%]" style={{ borderColor: "hsl(280 40% 20%)" }} />
-                        <div className="absolute top-4 w-2.5 h-2.5 bg-white border-2 rounded-full left-[20%]" style={{ borderColor: "hsl(280 40% 20%)" }} />
-                        <div className="absolute top-8 w-1.5 h-1.5 bg-white border-2 rounded-full left-[12%]" style={{ borderColor: "hsl(280 40% 20%)" }} />
-                      </>
-                    )}
-                  </div>
+                <div className="relative w-full h-10 pointer-events-none">
+                  {isWireframeChairScene ? (
+                    <>
+                      <div className="absolute top-0 left-[78%] w-4 h-4 bg-white border-2 rounded-full" style={{ borderColor: "hsl(280 40% 20%)" }} />
+                      <div className="absolute top-3 left-[84%] w-2.5 h-2.5 bg-white border-2 rounded-full" style={{ borderColor: "hsl(280 40% 20%)" }} />
+                      <div className="absolute top-6 left-[90%] w-1.5 h-1.5 bg-white border-2 rounded-full" style={{ borderColor: "hsl(280 40% 20%)" }} />
+                    </>
+                  ) : isChairScene ? (
+                    <>
+                      <div className="absolute top-0 left-1/2 -translate-x-1/2 w-4 h-4 bg-white border-2 rounded-full" style={{ borderColor: "hsl(280 40% 20%)" }} />
+                      <div className="absolute top-3 left-[54%] w-2.5 h-2.5 bg-white border-2 rounded-full" style={{ borderColor: "hsl(280 40% 20%)" }} />
+                      <div className="absolute top-6 left-[58%] w-1.5 h-1.5 bg-white border-2 rounded-full" style={{ borderColor: "hsl(280 40% 20%)" }} />
+                    </>
+                  ) : (
+                    <>
+                      <div className="absolute top-0 w-4 h-4 bg-white border-2 rounded-full left-[30%]" style={{ borderColor: "hsl(280 40% 20%)" }} />
+                      <div className="absolute top-4 w-2.5 h-2.5 bg-white border-2 rounded-full left-[20%]" style={{ borderColor: "hsl(280 40% 20%)" }} />
+                      <div className="absolute top-8 w-1.5 h-1.5 bg-white border-2 rounded-full left-[12%]" style={{ borderColor: "hsl(280 40% 20%)" }} />
+                    </>
+                  )}
                 </div>
               </motion.div>
             )}
           </AnimatePresence>
-          <img
-            src={bunnyMascot}
-            alt="TimeBunny mascot"
-            className={`object-contain drop-shadow-xl transition-all duration-700 hover:scale-105 active:scale-95 pixel-img ${config.bunnySize}`}
-            draggable={false}
-          />
+          {bunnyScaleClass ? (
+            <div className={bunnyScaleClass}>
+              <img
+                src={bunnyMascot}
+                alt="TimeBunny mascot"
+                className={`object-contain drop-shadow-xl transition-all duration-700 hover:scale-105 active:scale-95 pixel-img ${config.bunnySize}`}
+                draggable={false}
+              />
+            </div>
+          ) : (
+            <img
+              src={bunnyMascot}
+              alt="TimeBunny mascot"
+              className={`object-contain drop-shadow-xl transition-all duration-700 hover:scale-105 active:scale-95 pixel-img ${config.bunnySize}`}
+              draggable={false}
+            />
+          )}
         </div>
       </div>
+      )}
 
       <CalendarImportModal
         isOpen={isCalendarModalOpen}
@@ -1428,9 +1723,7 @@ const WizardInterface = ({ settings, onSettingsChange, onComplete, isLoading, ge
             setIsJournalFocused(false);
             setIsAutoAdvancePending(false);
             setScene("energy");
-            setBubbleClickCount(1);
-            setShowSpeechBubble(true);
-            typeMessage("How is your energy level?");
+            showBunnyMessage("How is your energy level?");
           }}
           className="fixed bottom-4 right-4 z-50 flex items-center justify-center w-12 h-12 rounded-md text-xs font-semibold text-white shadow-lg transition-all hover:scale-105 active:scale-95"
           style={{ background: "hsl(140 60% 45%)" }}
@@ -1460,6 +1753,7 @@ const WizardInterface = ({ settings, onSettingsChange, onComplete, isLoading, ge
             onClick={() => {
               if (atInitial && onBackFromInitial) { onBackFromInitial(); return; }
               if (!prev) return;
+              clearSpeechTimers();
               setScene(prev);
               setShowSpeechBubble(false);
               setTypedText("");

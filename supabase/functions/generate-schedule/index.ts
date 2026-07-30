@@ -8,7 +8,6 @@ const corsHeaders = {
 interface UserSettings {
   energyLevel: "motivated" | "unmotivated";
   stressLevel: "low" | "medium" | "high";
-  theme: "hearts" | "diamonds" | "clubs" | "spades";
   wakeTime: string;
   bedTime: string;
 }
@@ -19,10 +18,56 @@ serve(async (req) => {
   }
 
   try {
-    const { messages, settings, timezone, currentTime, currentLocalTime, currentLocalDate, utcOffsetMinutes } = await req.json() as {
+    const {
+      messages,
+      settings,
+      timezone,
+      localDate,
+      currentTime,
+      currentLocalTime,
+      currentLocalDate,
+      utcOffsetMinutes,
+      goals,
+      calendarAnalysis,
+      vibeChecks,
+      optimizeMode,
+    } = await req.json() as {
       messages: Array<{ role: string; content: string }>;
       settings: UserSettings;
+      goals?: Array<{
+        id: string;
+        title: string;
+        category: string;
+        goal_type: string;
+        target_hours: number;
+        totalLogged: number;
+        remainingHours: number;
+        suggestedDailyMinutes: number;
+        streak: number;
+      }>;
+      calendarAnalysis?: Array<{
+        title: string;
+        date: string | null;
+        startTime?: string | null;
+        endTime?: string | null;
+        final_category: string;
+        final_importance: string;
+        lead_days: number;
+        recommended_start_date: string | null;
+        prep_milestones: string[];
+        rationale: string;
+      }>;
+      vibeChecks?: Array<{
+        at: string;
+        mood: string;
+        energy: string;
+        needBreak: boolean;
+        adjustSchedule: string;
+        notes: string;
+      }>;
+      optimizeMode?: "default" | "lighten" | "reschedule" | "critical_only";
       timezone?: string;
+      localDate?: string;
       currentTime?: string;
       currentLocalTime?: string;
       currentLocalDate?: string;
@@ -43,13 +88,75 @@ serve(async (req) => {
       ? `UTC${utcOffsetMinutes >= 0 ? "+" : "-"}${String(Math.floor(Math.abs(utcOffsetMinutes) / 60)).padStart(2, "0")}:${String(Math.abs(utcOffsetMinutes) % 60).padStart(2, "0")}`
       : "UTC";
 
-    const systemPrompt = `You are a ruthlessly effective schedule optimizer for college students. You disguise your precision behind a whimsical Wonderland personality (${settings.theme} suit), but your PRIMARY MISSION is helping students meet every deadline.
+    const todayIso =
+      typeof localDate === "string" && /^\d{4}-\d{2}-\d{2}$/.test(localDate)
+        ? localDate
+        : (typeof currentTime === "string" ? currentTime : new Date().toISOString()).slice(0, 10);
+
+    const calendarBlock =
+      Array.isArray(calendarAnalysis) && calendarAnalysis.length > 0
+        ? `\n\n═══════════════════════════════════════
+NEUROSYMBOLIC CALENDAR ANALYSIS (SYMBOLIC + NEURAL FUSION)
+═══════════════════════════════════════
+${calendarAnalysis
+          .map((t) => {
+            const isToday = t.date === todayIso;
+            const fixed = isToday && t.startTime ? " [FIXED TODAY]" : "";
+            const time =
+              t.startTime && t.endTime
+                ? `${t.startTime}–${t.endTime}`
+                : t.startTime || t.date || "unscheduled";
+            const prep =
+              t.prep_milestones?.length > 0
+                ? `\n  Prep milestones: ${t.prep_milestones.join("; ")}`
+                : "";
+            return `- ${t.title}${fixed} (${time}, ${t.final_category}, ${t.final_importance})
+  Prep by ${t.recommended_start_date ?? "ASAP"} (${t.lead_days}d lead)${prep}
+  Rationale: ${t.rationale}`;
+          })
+          .join("\n")}
+
+Use importance (critical>major>moderate>minor) and lead_days to prioritize prep blocks.
+[FIXED TODAY] events are immovable walls with exact times.`
+        : "";
+
+    const vibeBlock =
+      Array.isArray(vibeChecks) && vibeChecks.length > 0
+        ? `\n\n═══════════════════════════════════════
+VIBE CHECK SIGNALS (REAL-TIME USER STATE)
+═══════════════════════════════════════
+${vibeChecks
+          .slice(-5)
+          .map(
+            (v) =>
+              `- ${v.at}: mood=${v.mood}, energy=${v.energy}, adjust=${v.adjustSchedule}${v.needBreak ? ", needs break" : ""}${v.notes ? ` — "${v.notes}"` : ""}`,
+          )
+          .join("\n")}
+${optimizeMode === "lighten" ? "\nMODE: LIGHTEN — defer non-urgent work, add breaks, reduce density." : ""}${optimizeMode === "reschedule" ? "\nMODE: RESCHEDULE — rebuild remaining day from current time." : ""}${optimizeMode === "critical_only" ? "\nMODE: CRITICAL ONLY — schedule [FIXED] calendar blocks + critical/deadline tasks ONLY. Defer moderate/minor/optional work. Short blocks, extra breaks." : ""}
+
+Adapt pacing and breaks to vibe history. struggling/low energy → gentler schedule.`
+        : "";
+
+    const goalBlock = Array.isArray(goals) && goals.length > 0
+      ? `\n\n═══════════════════════════════════════
+LONG-TERM GOALS (MANDATORY DAILY BLOCKS)
+═══════════════════════════════════════
+${goals.map((g) =>
+        `- 🎯 "${g.title}" (${g.category}, ${g.goal_type}) — ${g.totalLogged.toFixed(1)}h/${g.target_hours}h logged, ${g.remainingHours.toFixed(1)}h remaining, ${g.streak}d streak → schedule ~${g.suggestedDailyMinutes} min today`
+      ).join("\n")}
+
+Each active goal MUST appear as at least one schedule item with 🎯 in the title.
+Never skip a goal to save time. Fit them in gaps around deadlines and [FIXED] events.`
+      : "";
+
+    const systemPrompt = `You are a ruthlessly effective schedule optimizer for college students. Your PRIMARY MISSION is helping students meet every deadline AND make daily progress on long-term goals.
 
 User's current state:
 - Energy Level: ${settings.energyLevel}
 - Stress Level: ${settings.stressLevel}
 - Wake Time: ${settings.wakeTime}
 - Bed Time: ${settings.bedTime}
+${goalBlock}${calendarBlock}${vibeBlock}
 
 ═══════════════════════════════════════
 TIMEZONE & CURRENT TIME (CRITICAL)
@@ -110,8 +217,7 @@ When generating the schedule, use this EXACT JSON format wrapped in <schedule> t
       "title": "Task name",
       "time": "HH:MM",
       "endTime": "HH:MM",
-      "description": "Brief description",
-      "suit": "hearts" | "diamonds" | "clubs" | "spades"
+      "description": "Brief description"
     }
   ]
 }
@@ -119,12 +225,6 @@ When generating the schedule, use this EXACT JSON format wrapped in <schedule> t
 
 IMPORTANT: "time" is the start time. "endTime" is when it ends. Both MUST be in HH:MM 24-hour format.
 For [FIXED] calendar events, copy the start and end times EXACTLY as provided — do not change them.
-
-Suit assignments:
-- hearts: Self-care, breaks, meals, relaxation
-- diamonds: DEADLINE tasks and high-priority work (ALWAYS use diamonds for anything with a deadline)
-- clubs: Study sessions, routine work without deadlines
-- spades: Exercise, chores, practical tasks
 
 Energy-based scheduling:
 - Motivated: Front-load hardest deadline tasks in early slots, longer work blocks (60-90 min)
@@ -137,7 +237,7 @@ Stress-based scheduling:
 
 Always include: meals scheduled around fixed blocks, a wind-down before bedtime, at least 2-3 breaks, and one "treat yourself" activity.
 
-Be encouraging with Alice in Wonderland references, but NEVER sacrifice deadline accuracy for whimsy. The schedule must be REALISTIC and ACHIEVABLE.`;
+Be encouraging and practical, but NEVER sacrifice deadline accuracy for whimsy. The schedule must be REALISTIC and ACHIEVABLE.`;
 
 
     const response = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {

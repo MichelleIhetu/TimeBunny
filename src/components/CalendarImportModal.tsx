@@ -10,11 +10,12 @@ import {
 } from "@/components/ui/dialog";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { supabase } from "@/integrations/supabase/client";
-import { lovable } from "@/integrations/lovable";
 import { connectGoogleCalendar } from "@/lib/googleCalendarAccess";
-const requestGoogleCalendarAccessToken = async (): Promise<{ accessToken: string | null; error?: string }> => {
-  const r = await connectGoogleCalendar();
-  return { accessToken: r.accessToken ?? null, error: r.error };
+const requestGoogleCalendarAccessToken = async (
+  forceConsent = false,
+): Promise<{ accessToken: string | null; error?: string; redirected?: boolean }> => {
+  const r = await connectGoogleCalendar({ forceConsent });
+  return { accessToken: r.accessToken ?? null, error: r.error, redirected: r.redirected };
 };
 import { User, Session } from "@supabase/supabase-js";
 
@@ -122,7 +123,8 @@ const CalendarImportModal = ({ isOpen, onClose, onImport }: CalendarImportModalP
 
     try {
       if (session) {
-        const tokenResult = await requestGoogleCalendarAccessToken();
+        const tokenResult = await requestGoogleCalendarAccessToken(true);
+        if (tokenResult.redirected) return false;
         if (!tokenResult.accessToken) {
           setError(tokenResult.error || 'Google Calendar access was not granted.');
           setIsGoogleLoading(false);
@@ -134,22 +136,14 @@ const CalendarImportModal = ({ isOpen, onClose, onImport }: CalendarImportModalP
         return true;
       }
 
-      const { error } = await lovable.auth.signInWithOAuth('google', {
-        redirect_uri: window.location.origin,
-        extraParams: {
-          prompt: 'consent',
-          access_type: 'offline',
-          include_granted_scopes: 'true',
-          scope: 'openid email profile https://www.googleapis.com/auth/calendar.readonly https://www.googleapis.com/auth/calendar.events.readonly',
-        },
-      });
-
-      if (error) {
-        console.error('Google sign in error:', error);
-        setError(error.message);
+      const tokenResult = await requestGoogleCalendarAccessToken(true);
+      if (tokenResult.redirected) return false;
+      if (tokenResult.error) {
+        setError(tokenResult.error);
         setIsGoogleLoading(false);
         return false;
       }
+
       const { data: { session: newSession } } = await supabase.auth.getSession();
       if (newSession) {
         setSession(newSession);

@@ -1,0 +1,23 @@
+Add to ios/App/App/Info.plist when you create the Capacitor iOS project:
+
+  <key>NSCalendarsUsageDescription</key>
+  <string>TimeBunny reads your calendar to build a focused daily schedule around your events.</string>
+  <key>NSCalendarsFullAccessUsageDescription</key>
+  <string>TimeBunny reads your calendar to build a focused daily schedule around your events.</string>
+
+iOS 17+ uses requestFullAccessToEvents — include both keys for compatibility.
+
+Capacitor setup checklist:
+1. npm install @capacitor/core @capacitor/cli @capacitor/ios
+2. npx cap init TimeBunny com.timebunny.app --web-dir dist
+3. Copy native/ios/EventKitCalendarReader.swift and TimeBunnyCalendarPlugin.swift into ios/App/App/
+4. Register TimeBunnyCalendarPlugin in ios/App/App/AppDelegate.swift (Capacitor bridge)
+5. npm run build && npx cap sync ios
+6. In src/main.tsx or App.tsx after Capacitor loads:
+     import { registerPlugin } from '@capacitor/core';
+     import { registerEventKitBridge } from '@/lib/calendar';
+     registerEventKitBridge(registerPlugin('TimeBunnyCalendar'));
+
+Web dev mock (browser testing without Xcode):
+  localStorage.setItem('timebunny_mock_eventkit', '1')
+  then hard refresh

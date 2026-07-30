@@ -7,8 +7,6 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import ThemeBackground from "@/components/ThemeBackground";
-import SpiderWebBackground from "@/components/SpiderWebBackground";
 import { pinterestApi, type PinterestImage } from "@/lib/api/pinterest";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/useAuth";
@@ -301,10 +299,8 @@ const Moodboard = () => {
   );
 
   return (
-    <div className="min-h-screen relative overflow-hidden">
+    <div className="min-h-screen relative overflow-hidden" style={{ background: "hsl(300 50% 88%)" }}>
       <SEO title="Moodboard — TimeBunny" description="Curate a Pinterest-style aesthetic moodboard to inspire your focus and motivation in TimeBunny." path="/moodboard" />
-      <SpiderWebBackground />
-
 
       <div className="container max-w-6xl mx-auto px-4 py-6 relative z-10 min-h-screen">
         {/* Header */}

@@ -1,6 +1,13 @@
 import { useCallback } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { ScheduleItem, UserSettings } from "@/types/schedule";
+import type { AnalyzedTask } from "@/components/CalendarAnalysisModal";
+import {
+  appendLocalCalendarImportHistory,
+  createCalendarImportEntry,
+  type SavedCalendarImport,
+} from "@/lib/calendarImportHistory";
+import { localDateString } from "@/lib/localTime";
 
 export interface VibeCheckEntry {
   at: string;
@@ -9,6 +16,11 @@ export interface VibeCheckEntry {
   needBreak: boolean;
   adjustSchedule: "keep" | "lighten" | "reschedule";
   notes: string;
+  stressSignals?: {
+    detected: boolean;
+    matchedWords: string[];
+    criticalOnly: boolean;
+  };
 }
 
 export interface SessionExtras {
@@ -16,7 +28,7 @@ export interface SessionExtras {
   vibeCheck?: VibeCheckEntry;
 }
 
-const today = () => new Date().toISOString().split("T")[0];
+const today = () => localDateString();
 const LS_KEY = (date: string) => `timebunny:session:${date}`;
 const SNAPSHOT_KEY = "timebunny:snapshot";
 const SNAPSHOT_TTL_MS = 12 * 60 * 60 * 1000; // 12 hours
@@ -57,15 +69,17 @@ interface LocalSession {
   settings: UserSettings | null;
   journalText: string;
   vibeChecks: VibeCheckEntry[];
+  calendarImport?: AnalyzedTask[];
 }
 
 const readLocal = (): LocalSession => {
   try {
     const raw = localStorage.getItem(LS_KEY(today()));
-    if (!raw) return { schedule: [], settings: null, journalText: "", vibeChecks: [] };
-    return JSON.parse(raw);
+    if (!raw) return { schedule: [], settings: null, journalText: "", vibeChecks: [], calendarImport: [] };
+    const parsed = JSON.parse(raw) as LocalSession;
+    return { ...parsed, calendarImport: parsed.calendarImport ?? [] };
   } catch {
-    return { schedule: [], settings: null, journalText: "", vibeChecks: [] };
+    return { schedule: [], settings: null, journalText: "", vibeChecks: [], calendarImport: [] };
   }
 };
 
@@ -145,6 +159,50 @@ export function useSchedulePersistence(userId: string | undefined) {
     if (error) console.error("Failed to save vibe check:", error);
   }, [userId]);
 
+  const saveCalendarImport = useCallback(async (tasks: AnalyzedTask[]) => {
+    if (tasks.length === 0) return;
+
+    const entry = createCalendarImportEntry(tasks);
+    appendLocalCalendarImportHistory(entry);
+    writeLocal({ calendarImport: tasks });
+    if (!userId) return;
+
+    const date = today();
+    const { data } = await supabase
+      .from("user_schedules")
+      .select("schedule_data, settings, journal_text, vibe_checks")
+      .eq("user_id", userId)
+      .eq("schedule_date", date)
+      .maybeSingle();
+
+    const existingSettings = (data?.settings as Record<string, unknown> | null) ?? {};
+    const prevHistory = Array.isArray(existingSettings.calendarImportHistory)
+      ? (existingSettings.calendarImportHistory as SavedCalendarImport[])
+      : [];
+    const calendarImportHistory = [entry, ...prevHistory.filter((h) => h.id !== entry.id)].slice(0, 100);
+
+    const { error } = await supabase.from("user_schedules").upsert(
+      {
+        user_id: userId,
+        schedule_date: date,
+        schedule_data: (data?.schedule_data as any) ?? [],
+        settings: {
+          ...existingSettings,
+          calendarImport: {
+            tasks,
+            savedAt: entry.savedAt,
+          },
+          calendarImportHistory,
+        } as any,
+        journal_text: (data?.journal_text as string | null) ?? null,
+        vibe_checks: (data?.vibe_checks as any) ?? [],
+        updated_at: new Date().toISOString(),
+      },
+      { onConflict: "user_id,schedule_date" },
+    );
+    if (error) console.error("Failed to save calendar import:", error);
+  }, [userId]);
+
   const loadTodaySchedule = useCallback(async (): Promise<LocalSession | null> => {
     // Always check local first for instant restore
     const local = readLocal();
@@ -167,11 +225,14 @@ export function useSchedulePersistence(userId: string | undefined) {
       settings: data.settings as unknown as UserSettings | null,
       journalText: (data.journal_text as string | null) ?? "",
       vibeChecks: (data.vibe_checks as unknown as VibeCheckEntry[]) ?? [],
+      calendarImport:
+        ((data.settings as Record<string, unknown> | null)?.calendarImport as { tasks?: AnalyzedTask[] } | undefined)
+          ?.tasks ?? readLocal().calendarImport ?? [],
     };
     // Mirror remote to local
     writeLocal(remote);
     return remote;
   }, [userId]);
 
-  return { saveSchedule, saveJournal, appendVibeCheck, loadTodaySchedule };
+  return { saveSchedule, saveJournal, appendVibeCheck, saveCalendarImport, loadTodaySchedule };
 }

@@ -1,5 +1,13 @@
 import { useState, useCallback } from "react";
 import { ChatMessage, UserSettings, ScheduleItem } from "@/types/schedule";
+import { fillGoalGapsInSchedule, type GoalForSchedule } from "@/lib/goalsSchedule";
+import {
+  localDateString,
+  localTimeString,
+  getUserTimezone,
+  getUtcOffsetMinutes,
+} from "@/lib/localTime";
+import type { ScheduleGenerationContext } from "@/lib/scheduleOptimizationContext";
 import { toast } from "sonner";
 
 const CHAT_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/generate-schedule`;
@@ -25,7 +33,15 @@ export function useChat(settings: UserSettings) {
     }
   }, []);
 
-  const sendMessage = useCallback(async (input: string) => {
+  const sendMessage = useCallback(async (
+    input: string,
+    options?: {
+      goals?: Array<Record<string, unknown>>;
+      calendarAnalysis?: ScheduleGenerationContext["calendarAnalysis"];
+      vibeChecks?: ScheduleGenerationContext["vibeChecks"];
+      optimizeMode?: ScheduleGenerationContext["optimizeMode"];
+    },
+  ) => {
     const userMessage: ChatMessage = {
       id: `user-${Date.now()}`,
       role: "user",
@@ -51,11 +67,16 @@ export function useChat(settings: UserSettings) {
             content: m.content,
           })),
           settings,
-          timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+          goals: options?.goals ?? [],
+          calendarAnalysis: options?.calendarAnalysis ?? [],
+          vibeChecks: options?.vibeChecks ?? [],
+          optimizeMode: options?.optimizeMode ?? "default",
+          timezone: getUserTimezone(),
           currentTime: new Date().toISOString(),
-          currentLocalTime: new Date().toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", hour12: false }),
+          localDate: localDateString(),
+          currentLocalTime: localTimeString(),
           currentLocalDate: new Date().toLocaleDateString(undefined, { weekday: "long", year: "numeric", month: "long", day: "numeric" }),
-          utcOffsetMinutes: -new Date().getTimezoneOffset(),
+          utcOffsetMinutes: getUtcOffsetMinutes(),
         }),
       });
 
@@ -134,7 +155,12 @@ export function useChat(settings: UserSettings) {
       // Check for schedule in final content
       const schedule = parseScheduleFromContent(assistantContent);
       if (schedule.length > 0) {
-        setGeneratedSchedule(schedule);
+        const goalsList = (options?.goals ?? []) as GoalForSchedule[];
+        const merged =
+          goalsList.length > 0
+            ? fillGoalGapsInSchedule(schedule, goalsList, settings)
+            : schedule;
+        setGeneratedSchedule(merged);
         toast.success("Your schedule is ready! ✨");
       }
 

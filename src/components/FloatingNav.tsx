@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
-import { Target, ImageIcon, Sparkles, Clock, Home, Menu, X, Calendar, BookOpen } from "lucide-react";
+import { Target, ImageIcon, Sparkles, Clock, Home, Menu, X, Calendar, BookOpen, Award } from "lucide-react";
 import JournalBookModal from "./JournalBookModal";
 
 type NavItem = {
@@ -25,6 +25,7 @@ const items: NavItem[] = [
     match: () => false,
   },
   { label: "Goals", icon: Target, onClick: (nav) => nav("/goals"), match: (p) => p === "/goals" },
+  { label: "Badges", icon: Award, onClick: (nav) => nav("/badges"), match: (p) => p === "/badges" },
   { label: "Moodboard", icon: ImageIcon, onClick: (nav) => nav("/moodboard"), match: (p) => p === "/moodboard" },
   { label: "Vibe Check", icon: Sparkles, onClick: (nav) => nav("/vibe-check"), match: (p) => p === "/vibe-check" },
 ];

@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { ArrowRight, Calendar, LogOut } from "lucide-react";
 import { toast } from "sonner";
@@ -8,23 +8,36 @@ import CalendarAnalysisModal, { AnalyzedTask } from "@/components/CalendarAnalys
 import { Button } from "@/components/ui/button";
 import { useAuth } from "@/hooks/useAuth";
 import { useChat } from "@/hooks/useChat";
+import { useGoals } from "@/hooks/useGoals";
+import { formatGoalsForSchedule } from "@/lib/goalsSchedule";
+import { useGoalScheduleSync } from "@/hooks/useGoalScheduleSync";
+import type { ScheduleGenerationContext } from "@/lib/scheduleOptimizationContext";
 import { useSchedulePersistence } from "@/hooks/useSchedulePersistence";
+import { useCalendarAutoSync } from "@/hooks/useCalendarAutoSync";
 import { UserSettings } from "@/types/schedule";
 import { supabase } from "@/integrations/supabase/client";
-import { lovable } from "@/integrations/lovable";
 import { connectGoogleCalendar } from "@/lib/googleCalendarAccess";
+import { saveCalendarSuccessState } from "@/pages/CalendarSuccess";
+import {
+  AUTO_FETCH_CALENDAR_KEY,
+  isGoogleCalendarOAuthReturn,
+  isOAuthReturn,
+  markAutoFetchCalendarAfterSignIn,
+} from "@/lib/googleOAuthReturn";
 
 import bunnyMascot from "@/assets/bunny-mascot.png";
+import LandingBunnySpeech from "@/components/LandingBunnySpeech";
+import { getUserTimezone, localDateString } from "@/lib/localTime";
 
-const requestGoogleCalendarAccessToken = async (): Promise<{ accessToken: string | null; error?: string }> => {
-  const result = await connectGoogleCalendar();
-  return { accessToken: result.accessToken ?? null, error: result.error };
+const requestGoogleCalendarAccessToken = async (
+  forceConsent = false,
+): Promise<{ accessToken: string | null; error?: string; redirected?: boolean }> => {
+  const result = await connectGoogleCalendar({ forceConsent });
+  return { accessToken: result.accessToken ?? null, error: result.error, redirected: result.redirected };
 };
 const defaultSettings: UserSettings = {
   energyLevel: "motivated",
   stressLevel: "medium",
-  theme: "hearts",
-  backgroundTheme: "gothic",
   wakeTime: "07:00",
   bedTime: "23:00",
 };
@@ -33,15 +46,24 @@ type View = "landing" | "wizard" | "schedule";
 const RESUME_CALENDAR_ANALYSIS_KEY = "resume_calendar_analysis_wb";
 const CALENDAR_OAUTH_ATTEMPT_KEY = "calendar_oauth_attempt";
 const POST_GOOGLE_AUTH_REDIRECT_KEY = "timebunny_post_google_auth_redirect";
+const WIZARD_VIEW_KEY = "timebunny_welcome_back_wizard";
+
+const readStoredView = (): View => {
+  if (sessionStorage.getItem(WIZARD_VIEW_KEY) === "1") return "wizard";
+  return "landing";
+};
 
 const WelcomeBack = () => {
   const navigate = useNavigate();
   const location = useLocation();
   const { user, signOut, loading: authLoading } = useAuth();
   const [settings, setSettings] = useState<UserSettings>(defaultSettings);
-  const [view, setView] = useState<View>("landing");
+  const [view, setView] = useState<View>(readStoredView);
+  const viewRef = useRef(view);
+  const forceLandingHandledRef = useRef(false);
   const [calendarAnalyzing, setCalendarAnalyzing] = useState(false);
   const [analyzedTasks, setAnalyzedTasks] = useState<AnalyzedTask[] | null>(null);
+  const [importedCalendarTasks, setImportedCalendarTasks] = useState<AnalyzedTask[]>([]);
   const [calendarImported, setCalendarImported] = useState(false);
   const [scope, setScope] = useState<"day" | "week" | "month">("month");
   const [showProviderChoice, setShowProviderChoice] = useState(false);
@@ -64,17 +86,73 @@ const WelcomeBack = () => {
   };
 
   const { isLoading, sendMessage, generatedSchedule, setGeneratedSchedule } = useChat(settings);
-  const { saveSchedule } = useSchedulePersistence(user?.id);
+  const { goals } = useGoals();
+  const formattedGoals = useMemo(() => formatGoalsForSchedule(goals), [goals]);
+  const { saveSchedule, saveCalendarImport, loadTodaySchedule } = useSchedulePersistence(user?.id);
 
-  // Auth returns should always land on the Welcome Back screen, not an in-progress wizard scene.
+  useEffect(() => {
+    if (!user) return;
+    loadTodaySchedule().then((session) => {
+      if (session?.calendarImport?.length) {
+        setImportedCalendarTasks(session.calendarImport);
+        setCalendarImported(true);
+      }
+    });
+  }, [user, loadTodaySchedule]);
+
+  useCalendarAutoSync({
+    enabled: !!user && !authLoading,
+    existingTasks: importedCalendarTasks,
+    onTasksUpdated: (tasks) => {
+      setImportedCalendarTasks(tasks);
+      if (tasks.length > 0) setCalendarImported(true);
+    },
+    saveCalendarImport,
+    paused: calendarAnalyzing || view === "wizard",
+  });
+
+  useGoalScheduleSync(generatedSchedule, goals, settings, setGeneratedSchedule, generatedSchedule.length > 0);
+
+  useEffect(() => {
+    viewRef.current = view;
+  }, [view]);
+
+  const goToWizard = useCallback(() => {
+    sessionStorage.setItem(WIZARD_VIEW_KEY, "1");
+    setView("wizard");
+  }, []);
+
+  const goToLanding = useCallback(() => {
+    sessionStorage.removeItem(WIZARD_VIEW_KEY);
+    setView("landing");
+  }, []);
+
+  // Auth returns with forceLanding should show Welcome Back once — never yank users out of the wizard.
   useEffect(() => {
     const params = new URLSearchParams(location.search);
-    const forceLanding = params.get("landing") === "1" || (location.state as any)?.forceLanding;
-    if (forceLanding) {
-      setView("landing");
-      window.history.replaceState({}, document.title, "/welcome-back");
-    }
-  }, [location.search, location.state]);
+    const state = location.state as {
+      forceLanding?: boolean;
+      calendarContinue?: boolean;
+      events?: Array<Record<string, unknown>>;
+      todayStr?: string;
+      scopeLabel?: string;
+    } | null;
+    const forceLanding = params.get("landing") === "1" || state?.forceLanding;
+    if (!forceLanding || forceLandingHandledRef.current || viewRef.current === "wizard") return;
+
+    forceLandingHandledRef.current = true;
+    goToLanding();
+
+    const nextState = state?.calendarContinue
+      ? {
+          calendarContinue: state.calendarContinue,
+          events: state.events,
+          todayStr: state.todayStr,
+          scopeLabel: state.scopeLabel,
+        }
+      : {};
+    navigate("/welcome-back", { replace: true, state: nextState });
+  }, [location.search, location.state, navigate, goToLanding]);
 
   const persistGoogleTokens = async (activeSession: any) => {
     const refreshToken = activeSession?.provider_refresh_token as string | undefined;
@@ -98,45 +176,94 @@ const WelcomeBack = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [generatedSchedule]);
 
-  // Resume calendar analysis after Google OAuth round-trip, or auto-scan when arriving via nav.
+  // After Google sign-in, auto-fetch calendar then show the success confirmation page.
   useEffect(() => {
     if (authLoading) return;
-    const autoScan = (location.state as any)?.autoScan === true;
-    // Only treat sessionStorage resume flag as valid if the URL actually looks
-    // like a returned OAuth redirect. Otherwise the flag is stale from an
-    // aborted attempt — clear it so we don't loop with a false error toast.
-    const hash = window.location.hash || "";
-    const search = window.location.search || "";
-    const isOAuthReturn =
-      hash.includes("access_token=") || hash.includes("provider_token=") || /[?&]code=/.test(search);
+    if (viewRef.current === "wizard") return;
 
-    if (sessionStorage.getItem(RESUME_CALENDAR_ANALYSIS_KEY) === "1" && isOAuthReturn) {
+    const autoScan = (location.state as any)?.autoScan === true;
+
+    if (isGoogleCalendarOAuthReturn()) {
       sessionStorage.removeItem(RESUME_CALENDAR_ANALYSIS_KEY);
+      sessionStorage.removeItem(AUTO_FETCH_CALENDAR_KEY);
+      sessionStorage.removeItem(CALENDAR_OAUTH_ATTEMPT_KEY);
+      sessionStorage.removeItem(POST_GOOGLE_AUTH_REDIRECT_KEY);
+      toast("Signed in! Fetching your calendar…", { icon: "📅" });
       setTimeout(() => {
         runCalendarAnalysis(scope);
-      }, 600);
-    } else if (autoScan) {
+      }, 800);
+      return;
+    }
+
+    // Hash may already be consumed by Supabase before this effect runs.
+    if (sessionStorage.getItem(AUTO_FETCH_CALENDAR_KEY) === "1" && user) {
+      sessionStorage.removeItem(AUTO_FETCH_CALENDAR_KEY);
+      sessionStorage.removeItem(RESUME_CALENDAR_ANALYSIS_KEY);
+      toast("Signed in! Fetching your calendar…", { icon: "📅" });
+      setTimeout(() => {
+        runCalendarAnalysis(scope);
+      }, 400);
+      return;
+    }
+
+    if (autoScan) {
       window.history.replaceState({}, document.title, "/welcome-back");
       setTimeout(() => {
         runCalendarAnalysis(scope);
       }, 200);
-    } else {
-      // Stale flags from a previous aborted OAuth — wipe so nothing auto-fires.
+    } else if (!isOAuthReturn()) {
       sessionStorage.removeItem(RESUME_CALENDAR_ANALYSIS_KEY);
-      if (!isOAuthReturn) {
-        sessionStorage.removeItem(CALENDAR_OAUTH_ATTEMPT_KEY);
-        sessionStorage.removeItem(POST_GOOGLE_AUTH_REDIRECT_KEY);
-      }
+      sessionStorage.removeItem(CALENDAR_OAUTH_ATTEMPT_KEY);
+      sessionStorage.removeItem(POST_GOOGLE_AUTH_REDIRECT_KEY);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [authLoading]);
+  }, [authLoading, user]);
 
   useEffect(() => {
     if (user) sessionStorage.removeItem(CALENDAR_OAUTH_ATTEMPT_KEY);
   }, [user]);
 
+  // Continue calendar analysis after the success confirmation page.
+  useEffect(() => {
+    const state = location.state as {
+      calendarContinue?: boolean;
+      events?: Array<Record<string, unknown>>;
+      todayStr?: string;
+    } | null;
+    if (!state?.calendarContinue || !state?.events?.length) return;
+
+    sessionStorage.removeItem(WIZARD_VIEW_KEY);
+    goToLanding();
+
+    (async () => {
+      setCalendarAnalyzing(true);
+      const events = state.events!;
+      const todayStr = state.todayStr ?? localDateString();
+
+      const { data: ana, error: anaErr } = await supabase.functions.invoke("analyze-calendar-tasks", {
+        body: { events, today: todayStr },
+      });
+      if (anaErr || ana?.error) {
+        toast.error(ana?.error || "Analysis failed");
+      } else {
+        const analyzed = ana?.analyzed ?? [];
+        setAnalyzedTasks(analyzed);
+        setImportedCalendarTasks(analyzed);
+        setCalendarImported(true);
+        if (analyzed.length > 0) {
+          await saveCalendarImport(analyzed);
+        }
+        toast.success(`Analyzed ${analyzed.length} events ✨`);
+      }
+      setCalendarAnalyzing(false);
+      window.history.replaceState({}, document.title);
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [location.state, goToLanding]);
+
   const runCalendarAnalysis = async (chosenScope: "day" | "week" | "month" = scope) => {
     if (calendarAnalyzing) return;
+    if (viewRef.current === "wizard") return;
     setCalendarAnalyzing(true);
     let calendarConsentAttempted = false;
     // Watchdog: never let the spinner hang forever.
@@ -166,13 +293,6 @@ const WelcomeBack = () => {
         return null;
       }
 
-      const {
-        data: { session: currentSession },
-      } = await supabase.auth.getSession();
-      if (currentSession) {
-        return null;
-      }
-
       // Guard: if we already attempted a Google redirect once and still have
       // no session, don't bounce the user into another redirect (infinite loop).
       if (sessionStorage.getItem(CALENDAR_OAUTH_ATTEMPT_KEY) === "1") {
@@ -188,40 +308,33 @@ const WelcomeBack = () => {
         return null;
       }
 
-      toast("Opening Google sign-in first…", { icon: "🔐" });
+      toast("Opening Google Calendar permissions…", { icon: "🔐" });
       calendarConsentAttempted = true;
       sessionStorage.setItem(RESUME_CALENDAR_ANALYSIS_KEY, "1");
       sessionStorage.setItem(CALENDAR_OAUTH_ATTEMPT_KEY, "1");
       sessionStorage.setItem(POST_GOOGLE_AUTH_REDIRECT_KEY, "/welcome-back");
-      const result = await lovable.auth.signInWithOAuth("google", {
-        redirect_uri: window.location.origin,
-        extraParams: {
-          prompt: "consent",
-          access_type: "offline",
-          include_granted_scopes: "true",
-          scope:
-            "openid email profile https://www.googleapis.com/auth/calendar.readonly https://www.googleapis.com/auth/calendar.events.readonly",
-        },
-      });
+      markAutoFetchCalendarAfterSignIn();
+
+      // Always force consent — even when already signed in — so calendar
+      // scopes and a refresh token are granted.
+      const result = await requestGoogleCalendarAccessToken(true);
 
       if (result.error) {
         sessionStorage.removeItem(RESUME_CALENDAR_ANALYSIS_KEY);
         sessionStorage.removeItem(CALENDAR_OAUTH_ATTEMPT_KEY);
         sessionStorage.removeItem(POST_GOOGLE_AUTH_REDIRECT_KEY);
-        toast.error(result.error.message || "Could not start Google sign-in");
+        toast.error(result.error || "Could not start Google sign-in");
         return null;
       }
 
       if (result.redirected) return null;
 
-      const refreshedSession = await waitForAuthSession();
-      await persistGoogleTokens(refreshedSession);
-      if (refreshedSession) {
+      if (result.accessToken) {
         sessionStorage.removeItem(RESUME_CALENDAR_ANALYSIS_KEY);
         sessionStorage.removeItem(CALENDAR_OAUTH_ATTEMPT_KEY);
       }
       sessionStorage.removeItem(POST_GOOGLE_AUTH_REDIRECT_KEY);
-      return refreshedSession?.provider_token ?? null;
+      return result.accessToken;
     };
 
     try {
@@ -246,16 +359,20 @@ const WelcomeBack = () => {
       const startIdx = scopeOrder.indexOf(chosenScope);
       const tryOrder = scopeOrder.slice(startIdx);
 
-      const fetchCalendar = async (scopeKey: "day" | "week" | "month", calendarAccessToken?: string) => {
+      const fetchCalendar = async (scopeKey: "day" | "week" | "month", calendarAccessToken?: string | null) => {
         const start = new Date();
         start.setHours(0, 0, 0, 0);
         const end = new Date(start);
         const scopeDays = scopeKey === "day" ? 1 : scopeKey === "week" ? 7 : 31;
         end.setDate(end.getDate() + scopeDays);
 
+        const headers: Record<string, string> = {};
+        if (calendarAccessToken) headers["x-provider-token"] = calendarAccessToken;
+
         return supabase.functions.invoke("google-calendar", {
+          headers,
           body: {
-            timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+            timezone: getUserTimezone(),
             timeMin: start.toISOString(),
             timeMax: end.toISOString(),
           },
@@ -278,8 +395,8 @@ const WelcomeBack = () => {
           } else {
             toast("Calendar permission needs to be refreshed.", { icon: "📅" });
           }
-          await requestCalendarConsent();
-          res = await fetchCalendar(scopeKey);
+          const accessToken = await requestCalendarConsent();
+          res = await fetchCalendar(scopeKey, accessToken);
           if (res.data?.needsAuth) {
             toast.error("Calendar access unavailable. Please sign in again.");
             setCalendarAnalyzing(false);
@@ -312,7 +429,7 @@ const WelcomeBack = () => {
         }
       }
 
-      const todayStr = new Date().toISOString().slice(0, 10);
+      const todayStr = localDateString();
 
       if (events.length === 0) {
         const diag = calData?.diagnostics;
@@ -331,20 +448,20 @@ const WelcomeBack = () => {
         return;
       }
 
+      const scopeLabel =
+        usedScope === "day" ? "today" : usedScope === "week" ? "this week" : "the next 31 days";
 
-      const { data: ana, error: anaErr } = await supabase.functions.invoke("analyze-calendar-tasks", {
-        body: { events, today: todayStr },
-      });
-      if (anaErr || ana?.error) {
-        toast.error(ana?.error || "Analysis failed");
-        setCalendarAnalyzing(false);
-        window.clearTimeout(watchdog);
-        return;
-      }
-
-      setAnalyzedTasks(ana?.analyzed ?? []);
-      setCalendarImported(true);
-      toast.success(`Analyzed ${ana?.analyzed?.length ?? 0} events ✨`);
+      window.clearTimeout(watchdog);
+      setCalendarAnalyzing(false);
+      const successState = {
+        eventCount: events.length,
+        scopeLabel,
+        returnTo: "/welcome-back",
+        events,
+        todayStr,
+      };
+      saveCalendarSuccessState(successState);
+      navigate("/calendar-success", { state: successState });
     } catch (e) {
       console.error(e);
       toast.error("Could not analyze calendar");
@@ -354,11 +471,14 @@ const WelcomeBack = () => {
     }
   };
 
-  const handleWizardComplete = (tasks: string) => {
-    sendMessage(tasks);
-    // Stay in the wizard — WizardInterface transitions to its own "schedule" scene internally.
-    // Previously we setView("schedule") which had no render branch and fell through to the landing.
-    setView("wizard");
+  const handleWizardComplete = (tasks: string, context?: ScheduleGenerationContext) => {
+    sendMessage(tasks, {
+      goals: formattedGoals,
+      calendarAnalysis: context?.calendarAnalysis ?? importedCalendarTasks,
+      vibeChecks: context?.vibeChecks,
+      optimizeMode: context?.optimizeMode,
+    });
+    goToWizard();
   };
 
   // ─── WIZARD VIEW (starts at cozy) ───
@@ -376,9 +496,9 @@ const WelcomeBack = () => {
           onComplete={handleWizardComplete}
           isLoading={isLoading}
           generatedSchedule={generatedSchedule}
+          analyzedCalendarTasks={importedCalendarTasks}
           initialScene="cozy"
-          onBackFromInitial={() => setView("landing")}
-          onStartFocus={() => navigate("/pomodoro", { state: { schedule: generatedSchedule } })}
+          onBackFromInitial={goToLanding}
           onScheduleChange={(items) => setGeneratedSchedule(items)}
           requireJournal={!calendarImported}
         />
@@ -486,7 +606,7 @@ const WelcomeBack = () => {
           <button
             onClick={() => {
               setCalendarAnalyzing(false);
-              setView("wizard");
+              goToWizard();
             }}
             className="fixed bottom-4 right-4 z-50 flex items-center justify-center w-12 h-12 rounded-md text-xs font-semibold text-white shadow-lg transition-all hover:scale-105 active:scale-95"
             style={{ background: "hsl(140 60% 45%)" }}
@@ -498,20 +618,46 @@ const WelcomeBack = () => {
 
       </div>
 
-      {/* Bunny mascot */}
-      <div className="absolute bottom-0 left-[-12%] z-[5] pointer-events-none">
-        <img
-          src={bunnyMascot}
-          alt="TimeBunny mascot"
-          className="w-64 sm:w-80 md:w-96 object-contain drop-shadow-xl pixel-img"
-          draggable={false}
-        />
-      </div>
+      {/* Syncing overlay — visible while calendar fetch runs after Google sign-in */}
+      {calendarAnalyzing && (
+        <div className="fixed inset-0 z-[70] flex flex-col items-center justify-center px-6 text-center bg-[#fdf4ff]/95">
+          <div
+            aria-hidden
+            className="absolute inset-0 opacity-40 pointer-events-none"
+            style={{
+              backgroundImage:
+                "linear-gradient(#ddd6fe 1px, transparent 1px), linear-gradient(90deg, #ddd6fe 1px, transparent 1px)",
+              backgroundSize: "24px 24px",
+            }}
+          />
+          <div className="relative z-10 bg-white border-2 border-[#5b21b6] shadow-[6px_6px_0px_#a78bfa] px-8 py-8 max-w-sm w-full">
+            <img
+              src={bunnyMascot}
+              alt=""
+              aria-hidden
+              className="w-24 mx-auto object-contain drop-shadow-[3px_3px_0px_#a78bfa] pixel-img mb-5 animate-pulse"
+              draggable={false}
+            />
+            <p className="text-[#5b21b6] text-[11px] leading-relaxed tracking-wide" style={{ fontFamily: "'Press Start 2P', cursive" }}>
+              FETCHING CALENDAR…
+            </p>
+            <p className="mt-3 text-[#a78bfa] text-xl leading-snug" style={{ fontFamily: "'VT323', monospace" }}>
+              TimeBunny is pulling your upcoming events from Google Calendar.
+            </p>
+          </div>
+        </div>
+      )}
+
+      <LandingBunnySpeech
+        className="fixed bottom-0 left-[-8%] sm:left-0 z-[55]"
+        imageClassName="w-64 sm:w-80 md:w-96 object-contain drop-shadow-xl transition-transform duration-200 hover:scale-105 active:scale-95 pixel-img"
+        bubbleClassName="absolute -top-4 left-[45%] sm:left-[50%] w-64 sm:w-72 md:w-80 z-20 pointer-events-none"
+      />
 
       {/* Next button — fixed bottom-right, appears after calendar sync */}
       {calendarImported && (
         <button
-          onClick={() => setView("wizard")}
+          onClick={goToWizard}
           className="fixed bottom-4 right-4 z-50 flex items-center justify-center gap-1 px-4 py-1.5 rounded-full text-xs font-semibold text-white shadow-lg transition-all hover:scale-105 active:scale-95"
           style={{ background: "hsl(280 70% 50%)" }}
           aria-label="Continue to journal"
@@ -524,9 +670,16 @@ const WelcomeBack = () => {
       <CalendarAnalysisModal
         isOpen={analyzedTasks !== null}
         onClose={() => setAnalyzedTasks(null)}
+        onSave={async (tasks) => {
+          await saveCalendarImport(tasks);
+          setImportedCalendarTasks(tasks);
+          setCalendarImported(true);
+          toast.success("Calendar import saved!");
+        }}
         onNext={() => {
           setAnalyzedTasks(null);
-          setView("wizard");
+          setCalendarImported(true);
+          goToWizard();
         }}
         tasks={analyzedTasks ?? []}
         monthLabel={new Date().toLocaleDateString(undefined, { month: "long", year: "numeric" })}

@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useMemo } from "react";
 import SEO from "@/components/SEO";
 import { useNavigate, useLocation } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
@@ -11,7 +11,7 @@ import { Textarea } from "@/components/ui/textarea";
 import bunnyMascot from "@/assets/bunny-mascot.png";
 import { useAuth } from "@/hooks/useAuth";
 import { useSchedulePersistence } from "@/hooks/useSchedulePersistence";
-import type { BackgroundTheme } from "@/types/schedule";
+import { detectVibeStressSignals } from "@/lib/vibeStressDetection";
 
 export interface VibeCheckResult {
   mood: "great" | "okay" | "struggling";
@@ -19,6 +19,11 @@ export interface VibeCheckResult {
   needBreak: boolean;
   adjustSchedule: "keep" | "lighten" | "reschedule";
   notes: string;
+  stressSignals?: {
+    detected: boolean;
+    matchedWords: string[];
+    criticalOnly: boolean;
+  };
 }
 
 type Step = "mood" | "energy" | "break" | "adjust" | "done";
@@ -47,7 +52,6 @@ const VibeCheck = () => {
   const location = useLocation();
   const { user } = useAuth();
   const { appendVibeCheck } = useSchedulePersistence(user?.id);
-  const _backgroundTheme: BackgroundTheme = (location.state as any)?.backgroundTheme ?? "gothic";
 
   const [step, setStep] = useState<Step>("mood");
   const [mood, setMood] = useState<VibeCheckResult["mood"] | null>(null);
@@ -56,6 +60,10 @@ const VibeCheck = () => {
   const [adjustSchedule, setAdjustSchedule] = useState<VibeCheckResult["adjustSchedule"] | null>(null);
   const [notes, setNotes] = useState("");
 
+  const pendingStress = useMemo(() => {
+    if (!mood || !energy || !adjustSchedule) return null;
+    return detectVibeStressSignals({ mood, energy, needBreak, adjustSchedule, notes });
+  }, [mood, energy, needBreak, adjustSchedule, notes]);
 
   const currentIndex = stepOrder.indexOf(step);
   const progress = ((currentIndex + 1) / stepOrder.length) * 100;
@@ -96,25 +104,28 @@ const VibeCheck = () => {
   };
 
   const handleFinish = async () => {
-    const result: VibeCheckResult = {
+    const base = {
       mood: mood!,
       energy: energy!,
       needBreak,
       adjustSchedule: adjustSchedule!,
       notes,
     };
+    const stressSignals = detectVibeStressSignals(base);
+    const result: VibeCheckResult = { ...base, stressSignals };
+
     try {
       await appendVibeCheck({ at: new Date().toISOString(), ...result });
     } catch (e) {
       console.error(e);
     }
-    const fromPomodoro = (location.state as any)?.fromPomodoro;
-    const schedule = (location.state as any)?.schedule;
-    if (fromPomodoro) {
-      navigate("/pomodoro", { state: { vibeCheckResult: result, schedule } });
-    } else {
-      navigate("/", { state: { vibeCheckResult: result } });
-    }
+
+    navigate("/", {
+      state: {
+        vibeCheckResult: result,
+        openScheduleView: true,
+      },
+    });
   };
 
   // Pixel button — chunky shadow like Goals page
@@ -375,6 +386,14 @@ const VibeCheck = () => {
                     ))}
                   </div>
 
+                  {pendingStress?.detected && (
+                    <p style={VT} className="text-base">
+                      <span style={{ color: COLORS.red }}>
+                        We'll keep today to the essentials — only what truly needs doing.
+                      </span>
+                    </p>
+                  )}
+
                   {adjustSchedule !== "keep" && (
                     <p style={VT} className="text-base">
                       <span style={{ color: COLORS.inkSoft }}>
@@ -438,7 +457,7 @@ const VibeCheck = () => {
                 }}
               >
                 <Sparkles className="w-4 h-4" />
-                {adjustSchedule === "keep" ? "BACK TO SCHEDULE" : "UPDATE SCHEDULE"}
+                {adjustSchedule === "keep" ? "SEE UPDATED SCHEDULE" : "UPDATE SCHEDULE"}
               </button>
             )}
           </div>

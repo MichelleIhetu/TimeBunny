@@ -1,5 +1,4 @@
 import { supabase } from "@/integrations/supabase/client";
-import { lovable } from "@/integrations/lovable";
 
 type GoogleCalendarConnectionResult = {
   accessToken: string | null;
@@ -7,7 +6,7 @@ type GoogleCalendarConnectionResult = {
   redirected?: boolean;
 };
 
-const GOOGLE_CALENDAR_SCOPES =
+export const GOOGLE_CALENDAR_SCOPES =
   "openid email profile https://www.googleapis.com/auth/calendar.readonly https://www.googleapis.com/auth/calendar.events.readonly";
 
 const waitForAuthSession = async (timeoutMs = 6000) => {
@@ -22,6 +21,10 @@ const waitForAuthSession = async (timeoutMs = 6000) => {
   return null;
 };
 
+/** Return the user to the same page after Google OAuth completes. */
+export const getGoogleOAuthRedirectTo = () =>
+  `${window.location.origin}${window.location.pathname}${window.location.search}`;
+
 export const persistGoogleTokens = async (session: any) => {
   if (!session?.provider_refresh_token && !session?.provider_token) return;
   await supabase.functions.invoke("google-token-save", {
@@ -35,41 +38,51 @@ export const persistGoogleTokens = async (session: any) => {
   });
 };
 
-export const connectGoogleCalendar = async (): Promise<GoogleCalendarConnectionResult> => {
+/**
+ * Obtain Google Calendar access via Supabase OAuth (not Lovable's /~oauth broker,
+ * which 404s outside Lovable-hosted domains). When forceConsent is true, always
+ * re-prompt so calendar scopes + a refresh token are granted.
+ */
+export const connectGoogleCalendar = async (
+  opts?: { forceConsent?: boolean },
+): Promise<GoogleCalendarConnectionResult> => {
+  const forceConsent = opts?.forceConsent ?? false;
+
   const {
     data: { session: existingSession },
   } = await supabase.auth.getSession();
-  if (existingSession) {
+
+  if (existingSession?.provider_token && !forceConsent) {
     await persistGoogleTokens(existingSession);
-    return { accessToken: null };
+    return { accessToken: existingSession.provider_token };
   }
 
-  const result = await lovable.auth.signInWithOAuth("google", {
-    redirect_uri: window.location.origin,
-    extraParams: {
-      prompt: "consent",
-      access_type: "offline",
-      include_granted_scopes: "true",
-      scope: GOOGLE_CALENDAR_SCOPES,
+  const { error } = await supabase.auth.signInWithOAuth({
+    provider: "google",
+    options: {
+      scopes: GOOGLE_CALENDAR_SCOPES,
+      queryParams: {
+        access_type: "offline",
+        prompt: "consent",
+        include_granted_scopes: "true",
+      },
+      redirectTo: getGoogleOAuthRedirectTo(),
     },
   });
 
-  if (result.error) return { accessToken: null, error: result.error.message };
-  if (result.redirected) return { accessToken: null, redirected: true };
+  if (error) return { accessToken: null, error: error.message };
 
-  const session = await waitForAuthSession();
-  await persistGoogleTokens(session);
-  return { accessToken: session?.provider_token ?? null };
+  // Supabase OAuth redirects the browser; the caller resumes after redirect.
+  return { accessToken: null, redirected: true };
 };
 
 supabase.auth.onAuthStateChange(async (event, session) => {
-  if (event === "SIGNED_IN" && session?.provider_refresh_token) {
+  if (event === "SIGNED_IN" && (session?.provider_refresh_token || session?.provider_token)) {
     await persistGoogleTokens(session);
   }
 });
 
 export const fetchCalendarEvents = async (timezone: string, opts?: { forceRefresh?: boolean }) => {
-  // Always try cache first for instant load
   const { data: cachedData } = await supabase.functions.invoke("google-calendar", {
     body: { timezone, cacheOnly: true },
   });
@@ -77,24 +90,31 @@ export const fetchCalendarEvents = async (timezone: string, opts?: { forceRefres
   const fetchedAt = cachedData?.fetchedAt ? new Date(cachedData.fetchedAt) : null;
   const ageMinutes = fetchedAt ? (Date.now() - fetchedAt.getTime()) / 60000 : 999;
 
-  // If cache is fresh (under 20 min), return it immediately
-  if (cachedData?.events?.length && ageMinutes < 20) {
+  if (cachedData?.events?.length && ageMinutes < 20 && !opts?.forceRefresh) {
     return cachedData.events;
   }
 
-  // Cache is stale or empty — do a live fetch
-  const { data } = await supabase.functions.invoke("google-calendar", {
-    body: { timezone, forceRefresh: true },
-  });
-
-  if (data?.needsAuth) {
-    const reconnect = await connectGoogleCalendar();
-    if (reconnect.redirected) return cachedData?.events ?? [];
-    if (reconnect.error) return cachedData?.events ?? [];
-    // Retry after reconnect
-    const { data: retryData } = await supabase.functions.invoke("google-calendar", {
+  const invokeLive = async (accessToken?: string | null) => {
+    const headers: Record<string, string> = {};
+    if (accessToken) headers["x-provider-token"] = accessToken;
+    return supabase.functions.invoke("google-calendar", {
+      headers,
       body: { timezone, forceRefresh: true },
     });
+  };
+
+  const { data } = await invokeLive();
+
+  if (data?.configurationError) {
+    console.error("Calendar configuration error:", data.error);
+    return cachedData?.events ?? [];
+  }
+
+  if (data?.needsAuth) {
+    const reconnect = await connectGoogleCalendar({ forceConsent: true });
+    if (reconnect.redirected) return cachedData?.events ?? [];
+    if (reconnect.error) return cachedData?.events ?? [];
+    const { data: retryData } = await invokeLive(reconnect.accessToken);
     return retryData?.events ?? cachedData?.events ?? [];
   }
 
