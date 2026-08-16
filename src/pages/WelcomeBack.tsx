@@ -12,7 +12,7 @@ import { useGoals } from "@/hooks/useGoals";
 import { formatGoalsForSchedule } from "@/lib/goalsSchedule";
 import { useGoalScheduleSync } from "@/hooks/useGoalScheduleSync";
 import type { ScheduleGenerationContext } from "@/lib/scheduleOptimizationContext";
-import { useSchedulePersistence } from "@/hooks/useSchedulePersistence";
+import { hasSyncedCalendarToday, useSchedulePersistence } from "@/hooks/useSchedulePersistence";
 import { useCalendarAutoSync } from "@/hooks/useCalendarAutoSync";
 import { UserSettings } from "@/types/schedule";
 import { supabase } from "@/integrations/supabase/client";
@@ -61,10 +61,21 @@ const WelcomeBack = () => {
   const [view, setView] = useState<View>(readStoredView);
   const viewRef = useRef(view);
   const forceLandingHandledRef = useRef(false);
+  const calendarSyncedNoteShownRef = useRef(false);
   const [calendarAnalyzing, setCalendarAnalyzing] = useState(false);
   const [analyzedTasks, setAnalyzedTasks] = useState<AnalyzedTask[] | null>(null);
-  const [importedCalendarTasks, setImportedCalendarTasks] = useState<AnalyzedTask[]>([]);
-  const [calendarImported, setCalendarImported] = useState(false);
+  const [importedCalendarTasks, setImportedCalendarTasks] = useState<AnalyzedTask[]>(() => {
+    try {
+      const raw = localStorage.getItem(`timebunny:session:${localDateString()}`);
+      if (!raw) return [];
+      const parsed = JSON.parse(raw) as { calendarImport?: AnalyzedTask[] };
+      return parsed.calendarImport ?? [];
+    } catch {
+      return [];
+    }
+  });
+  const [calendarImported, setCalendarImported] = useState(() => hasSyncedCalendarToday());
+  const [calendarSyncedNoteVisible, setCalendarSyncedNoteVisible] = useState(false);
   const [scope, setScope] = useState<"day" | "week" | "month">("month");
   const [showProviderChoice, setShowProviderChoice] = useState(false);
 
@@ -91,7 +102,6 @@ const WelcomeBack = () => {
   const { saveSchedule, saveCalendarImport, loadTodaySchedule } = useSchedulePersistence(user?.id);
 
   useEffect(() => {
-    if (!user) return;
     loadTodaySchedule().then((session) => {
       if (session?.calendarImport?.length) {
         setImportedCalendarTasks(session.calendarImport);
@@ -115,6 +125,21 @@ const WelcomeBack = () => {
 
   useEffect(() => {
     viewRef.current = view;
+  }, [view]);
+
+  // Brief side note when Start skipped welcome-back because calendar was already synced.
+  useEffect(() => {
+    if (view !== "wizard" || calendarSyncedNoteShownRef.current) return;
+
+    const synced = (location.state as { calendarAlreadySynced?: boolean } | null)?.calendarAlreadySynced;
+    if (!synced) return;
+
+    calendarSyncedNoteShownRef.current = true;
+    setCalendarSyncedNoteVisible(true);
+    window.history.replaceState({}, document.title);
+
+    const timer = window.setTimeout(() => setCalendarSyncedNoteVisible(false), 10000);
+    return () => window.clearTimeout(timer);
   }, [view]);
 
   const goToWizard = useCallback(() => {
@@ -502,6 +527,26 @@ const WelcomeBack = () => {
           onScheduleChange={(items) => setGeneratedSchedule(items)}
           requireJournal={!calendarImported}
         />
+        {calendarSyncedNoteVisible && (
+          <aside
+            className="fixed right-4 sm:right-6 top-1/2 -translate-y-1/2 z-[70] max-w-[13rem] sm:max-w-[15rem] px-4 py-3 rounded-2xl border-2 shadow-lg pointer-events-none transition-opacity duration-500"
+            style={{
+              background: "hsl(300 60% 96%)",
+              borderColor: "hsl(140 45% 55%)",
+              boxShadow: "4px 4px 0 hsl(140 45% 40%)",
+              fontFamily: "var(--font-body)",
+            }}
+            role="status"
+            aria-live="polite"
+          >
+            <p className="text-sm font-semibold" style={{ color: "hsl(140 50% 30%)" }}>
+              ✓ Calendar already synced
+            </p>
+            <p className="text-xs mt-1 leading-snug" style={{ color: "hsl(280 30% 40%)" }}>
+              Skipped straight to your journal — your events are ready.
+            </p>
+          </aside>
+        )}
       </>
     );
   }

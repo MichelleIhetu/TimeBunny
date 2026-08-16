@@ -40,7 +40,6 @@ import {
 import { endOfMonthDateString, localMonthString } from "@/lib/localTime";
 import { UserSettings } from "@/types/schedule";
 import GoalCarrotCelebration from "@/components/GoalCarrotCelebration";
-import GrowingCarrot from "@/components/GrowingCarrot";
 
 const defaultScheduleSettings: UserSettings = {
   energyLevel: "motivated",
@@ -91,25 +90,27 @@ function GoalCard({
     setShowLog(false);
   };
 
+  const complete = progress >= 100;
+
   return (
-    <div className="group relative bg-white border-2 border-[#ddd6fe] p-4 hover:bg-purple-50 transition-colors">
-      <div className="flex gap-3 mb-3">
-        <GrowingCarrot progress={progress} className="flex-shrink-0" />
+    <div className={`group relative bg-white border-2 p-4 hover:bg-purple-50 transition-colors ${complete ? "border-[#2dd4bf]" : "border-[#ddd6fe]"}`}>
+      <div className="flex justify-between items-start gap-3 mb-3">
         <div className="min-w-0 flex-1">
-          <div className="flex justify-between items-start gap-3">
-            <div className="min-w-0 flex-1">
-              <h3 className="text-[#5b21b6] text-[11px] mb-2 leading-relaxed flex items-center gap-2" style={PIXEL}>
-                <span className="text-base leading-none">{emoji}</span>
-                <span className="truncate">{goal.title}</span>
-              </h3>
-              <p className="text-[#a78bfa] text-lg leading-none" style={VT}>
-                {formatGoalProgress(goal.totalLogged, goal.target_hours, unit)} · {goalProgressSubtitle(unit, goal.goal_type)}
-              </p>
-            </div>
-            <div className="text-[#2dd4bf] text-2xl leading-none flex-shrink-0" style={VT}>
-              {Math.round(progress)}%
-            </div>
-          </div>
+          <h3 className="text-[#5b21b6] text-[11px] mb-2 leading-relaxed flex items-center gap-2" style={PIXEL}>
+            <span className="text-base leading-none">{emoji}</span>
+            <span className="truncate">{goal.title}</span>
+            {complete && (
+              <span className="text-[9px] text-[#2dd4bf] flex-shrink-0" style={PIXEL}>
+                ✓ DONE
+              </span>
+            )}
+          </h3>
+          <p className="text-[#a78bfa] text-lg leading-none" style={VT}>
+            {formatGoalProgress(goal.totalLogged, goal.target_hours, unit)} · {goalProgressSubtitle(unit, goal.goal_type)}
+          </p>
+        </div>
+        <div className="text-[#2dd4bf] text-2xl leading-none flex-shrink-0" style={VT}>
+          {Math.round(progress)}%
         </div>
       </div>
 
@@ -486,8 +487,9 @@ export default function Goals() {
   }, 0);
 
   const handleFindGaps = async () => {
-    if (goals.length === 0) {
-      toast.error("Create some goals first!");
+    const activeGoals = goals.filter((g) => !isGoalComplete(g));
+    if (activeGoals.length === 0) {
+      toast.error(goals.length === 0 ? "Create some goals first!" : "All your goals are complete — nothing to schedule!");
       return;
     }
     setLoadingSuggestions(true);
@@ -499,7 +501,7 @@ export default function Goals() {
       const { data, error } = await supabase.functions.invoke("suggest-goal-blocks", {
         body: {
           schedule,
-          goals: goals.map((g) => ({
+          goals: activeGoals.map((g) => ({
             id: g.id,
             title: g.title,
             category: g.category,

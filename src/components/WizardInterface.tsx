@@ -27,7 +27,6 @@ import {
   playCriticalVictoryFanfare,
 } from "@/lib/pomodoroBunny";
 import PomodoroBunnyCompanion from "@/components/PomodoroBunnyCompanion";
-import { loadEnergyStressSpeechBubblePosition } from "@/lib/energyStressSpeechBubblePosition";
 import { loadJournalSpeechBubblePosition } from "@/lib/journalSpeechBubblePosition";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
@@ -92,17 +91,17 @@ const ENERGY_STRESS_CHAIR_BUNNY = {
   backgroundClass: WIREframe_CHAIR_BUNNY.backgroundClass,
 } as const;
 
-/** Speech bubble — floated left of bunny head (scaled bunny does not affect layout) */
-const ENERGY_STRESS_SPEECH_BUBBLE_DEFAULT_POS =
-  "bottom-[calc(72%+2rem)] -left-[16rem] sm:-left-[22rem] md:-left-[26rem]";
-
+/** Speech bubble — journal scene (absolute tuning) */
 const JOURNAL_SPEECH_BUBBLE_DEFAULT_POS =
   "bottom-[72%] -left-[18rem] sm:-left-[22rem] md:-left-[26rem]";
 
 const WIREframe_SPEECH_BUBBLE = {
   journal: `absolute z-50 pointer-events-none w-60 sm:w-72 ${JOURNAL_SPEECH_BUBBLE_DEFAULT_POS}`,
-  energyStress: `absolute z-50 pointer-events-none w-60 sm:w-72 ${ENERGY_STRESS_SPEECH_BUBBLE_DEFAULT_POS}`,
 } as const;
+
+/** Energy / stress — beside scaled bunny head (layout box ≠ visual size after scale) */
+const ENERGY_STRESS_SPEECH_BUBBLE_CLASS =
+  "absolute z-50 pointer-events-none w-56 sm:w-64 right-[calc(100%-1.65rem)] sm:right-[calc(100%-1.5rem)] -top-[48%] sm:-top-[52%] -translate-y-36";
 
 const SCENE_CONFIG = {
   library: {
@@ -249,7 +248,6 @@ const WizardInterface = ({ settings, onSettingsChange, onComplete, isLoading, ge
   const [isJournalFocused, setIsJournalFocused] = useState(false);
   const [isBookOpen, setIsBookOpen] = useState(false);
   const [draftResumed, setDraftResumed] = useState(false);
-  const energyStressBubblePos = useMemo(() => loadEnergyStressSpeechBubblePosition(), []);
   const journalBubblePos = useMemo(() => loadJournalSpeechBubblePosition(), []);
 
   // Local draft key so unsent text survives exits even before Supabase autosave fires
@@ -476,11 +474,7 @@ const WizardInterface = ({ settings, onSettingsChange, onComplete, isLoading, ge
   const isWireframeChairScene = scene === "cozy" || scene === "energy" || scene === "stress";
   const isEnergyStressScene = scene === "energy" || scene === "stress";
   const isJournalScene = scene === "cozy";
-  const wireframeSpeechBubbleClass = isJournalScene
-    ? WIREframe_SPEECH_BUBBLE.journal
-    : isEnergyStressScene
-      ? WIREframe_SPEECH_BUBBLE.energyStress
-      : undefined;
+  const wireframeSpeechBubbleClass = isJournalScene ? WIREframe_SPEECH_BUBBLE.journal : undefined;
   const bunnyScaleClass = "bunnyScale" in config ? (config as { bunnyScale?: string }).bunnyScale : undefined;
 
 
@@ -1610,8 +1604,16 @@ const WizardInterface = ({ settings, onSettingsChange, onComplete, isLoading, ge
       >
         <div
           className={`relative cursor-pointer overflow-visible ${
-            isChairScene && !isWireframeChairScene ? "flex flex-col items-center" : ""
-          } ${isWireframeChairScene ? "max-w-none" : isChairScene ? "max-w-[38rem]" : ""}`}
+            isEnergyStressScene
+              ? "inline-block"
+              : isChairScene && !isWireframeChairScene
+                ? "flex flex-col items-center"
+                : isWireframeChairScene
+                  ? "max-w-none"
+                  : isChairScene
+                    ? "max-w-[38rem]"
+                    : ""
+          } ${scene === "cozy" && isJournalFocused ? "pointer-events-none" : ""}`}
           onClick={handleBunnyClick}
         >
           <AnimatePresence>
@@ -1623,17 +1625,17 @@ const WizardInterface = ({ settings, onSettingsChange, onComplete, isLoading, ge
                 exit={{ opacity: 0, scale: 0.95, y: 6 }}
                 transition={{ duration: 0.2 }}
                 className={
-                  wireframeSpeechBubbleClass ??
-                  (isChairScene
-                    ? "z-50 pointer-events-none w-60 sm:w-72 order-first mb-2"
-                    : "z-50 pointer-events-none absolute -top-16 w-72 sm:w-80 right-[60%]")
+                  isEnergyStressScene
+                    ? ENERGY_STRESS_SPEECH_BUBBLE_CLASS
+                    : wireframeSpeechBubbleClass ??
+                      (isChairScene
+                        ? "z-50 pointer-events-none w-60 sm:w-72 order-first mb-2"
+                        : "z-50 pointer-events-none absolute -top-16 w-72 sm:w-80 right-[60%]")
                 }
                 style={
                   isJournalScene && journalBubblePos
                     ? { left: journalBubblePos.left, bottom: journalBubblePos.bottom }
-                    : isEnergyStressScene && energyStressBubblePos
-                      ? { left: energyStressBubblePos.left, bottom: energyStressBubblePos.bottom }
-                      : undefined
+                    : undefined
                 }
               >
                 <div

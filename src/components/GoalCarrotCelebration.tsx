@@ -1,4 +1,5 @@
 import { AnimatePresence, motion } from "framer-motion";
+import CarrotIcon from "@/components/CarrotIcon";
 import bunnyMascot from "@/assets/bunny-mascot.png";
 import type { GoalWithProgress } from "@/hooks/useGoals";
 
@@ -29,15 +30,23 @@ export default function GoalCarrotCelebration({ goal, onDismiss }: Props) {
             className="max-w-sm w-full border-2 border-[#5b21b6] bg-white p-6 text-center shadow-[8px_8px_0px_#a78bfa]"
             onClick={(e) => e.stopPropagation()}
           >
+            <motion.div
+              initial={{ scale: 0.5, rotate: -12 }}
+              animate={{ scale: 1, rotate: 0 }}
+              transition={{ type: "spring", stiffness: 260, damping: 14 }}
+              className="mx-auto mb-3"
+            >
+              <CarrotIcon className="h-20 w-20 mx-auto" />
+            </motion.div>
             <motion.img
               src={bunnyMascot}
               alt=""
               aria-hidden
               draggable={false}
-              className="mx-auto mb-4 h-28 w-auto object-contain pixel-img animate-bunny-victory"
+              className="mx-auto mb-4 h-16 w-auto object-contain pixel-img animate-bunny-victory"
             />
             <p className="text-[#5b21b6] text-xs leading-relaxed" style={PIXEL}>
-              CARROT HARVESTED!
+              YOU EARNED A CARROT!
             </p>
             <p className="mt-3 text-2xl text-[#a78bfa]" style={VT}>
               {goal.title} is complete — TimeBunny is so proud of you!

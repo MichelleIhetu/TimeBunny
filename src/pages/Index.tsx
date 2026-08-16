@@ -20,7 +20,11 @@ import {
 import { buildStressSchedulePrompt, detectVibeStressSignals } from "@/lib/vibeStressDetection";
 import type { VibeCheckEntry } from "@/hooks/useSchedulePersistence";
 import { useAuth } from "@/hooks/useAuth";
-import { useSchedulePersistence, loadScheduleSnapshot } from "@/hooks/useSchedulePersistence";
+import {
+  useSchedulePersistence,
+  loadScheduleSnapshot,
+  hasSyncedCalendarToday,
+} from "@/hooks/useSchedulePersistence";
 import { useCalendarAutoSync } from "@/hooks/useCalendarAutoSync";
 import { UserSettings, DEFAULT_SCHEDULE_SUIT } from "@/types/schedule";
 import { Button } from "@/components/ui/button";
@@ -28,6 +32,11 @@ import CalendarAnalysisModal, { AnalyzedTask } from "@/components/CalendarAnalys
 import MonthlyCalendarModal from "@/components/MonthlyCalendarModal";
 import { supabase } from "@/integrations/supabase/client";
 import { connectGoogleCalendar } from "@/lib/googleCalendarAccess";
+import {
+  AUTO_FETCH_CALENDAR_KEY,
+  isGoogleCalendarOAuthReturn,
+  markAutoFetchCalendarAfterSignIn,
+} from "@/lib/googleOAuthReturn";
 import { saveCalendarSuccessState } from "@/pages/CalendarSuccess";
 import {
   addDaysToDateString,
@@ -225,6 +234,15 @@ const Index = () => {
     }
   }, [location.state]);
 
+  // Open monthly calendar when navigated from floating nav (or deep links).
+  useEffect(() => {
+    const state = location.state as { openMonthlyCalendar?: boolean } | null;
+    if (!state?.openMonthlyCalendar) return;
+
+    setShowMonthlyCalendar(true);
+    window.history.replaceState({}, document.title);
+  }, [location.state]);
+
   // Open schedule view when navigated with openScheduleView (e.g. floating nav, old /pomodoro links).
   useEffect(() => {
     const state = location.state as any;
@@ -420,10 +438,24 @@ const Index = () => {
 
   const todayDate = useMemo(() => getFormattedDate(), []);
 
-  const handleStart = () => {
+  const handleStart = async () => {
     playBing();
-    sessionStorage.removeItem(WELCOME_BACK_WIZARD_KEY);
-    navigate("/welcome-back");
+
+    let hasCalendar = hasSyncedCalendarToday(importedCalendarTasks);
+    if (!hasCalendar && user) {
+      const session = await loadTodaySchedule();
+      hasCalendar = (session?.calendarImport?.length ?? 0) > 0;
+      if (hasCalendar && session?.calendarImport) {
+        setImportedCalendarTasks(session.calendarImport);
+      }
+    }
+
+    if (hasCalendar) {
+      sessionStorage.setItem(WELCOME_BACK_WIZARD_KEY, "1");
+    } else {
+      sessionStorage.removeItem(WELCOME_BACK_WIZARD_KEY);
+    }
+    navigate("/welcome-back", { state: hasCalendar ? { calendarAlreadySynced: true } : undefined });
   };
   const handleBackToLanding = () => {
     if (generatedSchedule.length === 0) setViewMode("landing");
@@ -584,9 +616,24 @@ const Index = () => {
     }
   };
 
+  const monthlyCalendarModal = (
+    <MonthlyCalendarModal
+      isOpen={showMonthlyCalendar}
+      onClose={() => setShowMonthlyCalendar(false)}
+      calendarTasks={importedCalendarTasks}
+      goals={goals}
+      schedule={generatedSchedule}
+      isSignedIn={!!user}
+      onCalendarTasksUpdated={setImportedCalendarTasks}
+      saveCalendarImport={saveCalendarImport}
+      onConnectCalendar={runCalendarAnalysis}
+    />
+  );
+
   // ─── LANDING PAGE ───
   if (viewMode === "landing") {
     return (
+      <>
       <div className="min-h-screen relative overflow-hidden" style={{ background: "hsl(300 50% 88%)" }}>
         <SEO
           title="TimeBunny — AI Schedule Builder & Atomic Habits Companion"
@@ -763,18 +810,6 @@ const Index = () => {
           autoShow={comfortMode === "critical_only"}
         />
 
-        <MonthlyCalendarModal
-          isOpen={showMonthlyCalendar}
-          onClose={() => setShowMonthlyCalendar(false)}
-          calendarTasks={importedCalendarTasks}
-          goals={goals}
-          schedule={generatedSchedule}
-          isSignedIn={!!user}
-          onCalendarTasksUpdated={setImportedCalendarTasks}
-          saveCalendarImport={saveCalendarImport}
-          onConnectCalendar={runCalendarAnalysis}
-        />
-
         <CalendarAnalysisModal
           isOpen={analyzedTasks !== null}
           onClose={() => setAnalyzedTasks(null)}
@@ -791,6 +826,8 @@ const Index = () => {
           monthLabel={new Date().toLocaleDateString(undefined, { month: "long", year: "numeric" })}
         />
       </div>
+      {monthlyCalendarModal}
+      </>
     );
   }
 
@@ -818,6 +855,7 @@ const Index = () => {
           setViewMode("wizard");
         }}
       />
+      {monthlyCalendarModal}
     </>
   );
 };

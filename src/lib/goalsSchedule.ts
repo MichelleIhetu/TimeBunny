@@ -1,4 +1,5 @@
 import type { GoalWithProgress } from "@/hooks/useGoals";
+import { isGoalComplete } from "@/lib/goalCarrots";
 import {
   formatGoalProgress,
   goalProgressSubtitle,
@@ -40,7 +41,7 @@ export const formatGoalsForSchedule = (goals: GoalWithProgress[]): GoalForSchedu
   const dayOfMonth = now.getDate();
   const daysLeftInMonth = Math.max(1, daysInMonth - dayOfMonth + 1);
 
-  return goals.map((g) => {
+  return goals.filter((g) => !isGoalComplete(g)).map((g) => {
     const unit = normalizeGoalUnit(g.target_unit);
     const bookCompletion = isBookCompletionUnit(unit);
     const remainingHours = remainingHoursEquivalent(g.totalLogged, g.target_hours, unit);
@@ -241,6 +242,21 @@ export const mergeScheduleItems = (existing: ScheduleItem[], additions: Schedule
   for (const item of existing) byKey.set(`${item.time}-${item.title}`, item);
   for (const item of additions) byKey.set(`${item.time}-${item.title}`, item);
   return [...byKey.values()].sort((a, b) => a.time.localeCompare(b.time));
+};
+
+/** Drop schedule blocks tied to goals that are already complete. */
+export const removeCompletedGoalBlocks = (
+  schedule: ScheduleItem[],
+  goals: GoalWithProgress[],
+): ScheduleItem[] => {
+  const completedIds = new Set(goals.filter(isGoalComplete).map((g) => g.id));
+  if (completedIds.size === 0) return schedule;
+
+  return schedule.filter((item) => {
+    if (!isGoalScheduleItem(item)) return true;
+    const goalId = item.goalId ?? resolveGoalIdFromItem(item, goals);
+    return !goalId || !completedIds.has(goalId);
+  });
 };
 
 /** Insert goal blocks into free gaps for goals not yet on today's schedule. */

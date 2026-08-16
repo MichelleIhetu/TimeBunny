@@ -301,3 +301,24 @@
   transform: translateZ(0);
   will-change: transform;
 }
+
+/* ─── Mobile / native shell (Capacitor + phone viewport) ─── */
+.mobile-app-shell {
+  padding-top: env(safe-area-inset-top);
+  padding-bottom: calc(4.25rem + env(safe-area-inset-bottom));
+}
+
+.mobile-tab-bar {
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
+.native-app {
+  -webkit-tap-highlight-color: transparent;
+  overscroll-behavior-y: none;
+}
+
+.native-app input,
+.native-app textarea,
+.native-app select {
+  font-size: 16px; /* prevents iOS zoom-on-focus */
+}

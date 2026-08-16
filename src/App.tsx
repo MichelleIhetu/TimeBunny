@@ -2,8 +2,8 @@ import { Toaster } from "@/components/ui/toaster";
 import { Toaster as Sonner } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { BrowserRouter, Routes, Route, useLocation, Navigate } from "react-router-dom";
-import { useEffect } from "react";
+import { BrowserRouter, Routes, Route, Navigate, useNavigate } from "react-router-dom";
+import { useEffect, type ReactNode } from "react";
 import Index from "./pages/Index";
 import Auth from "./pages/Auth";
 import WelcomeBack from "./pages/WelcomeBack";
@@ -13,22 +13,45 @@ import Moodboard from "./pages/Moodboard";
 import VibeCheck from "./pages/VibeCheck";
 import CalendarSuccess from "./pages/CalendarSuccess";
 import NotFound from "./pages/NotFound";
-import FloatingNav from "./components/FloatingNav";
-import CarrotHonorGlobal from "./components/CarrotHonorGlobal";
+import AppNavigation from "./components/AppNavigation";
 import { LocalTimeProvider } from "@/hooks/useLocalTime";
+import { usePlatform } from "@/hooks/usePlatform";
 import { supabase } from "@/integrations/supabase/client";
 import "@/lib/googleCalendarAccess";
 
 const queryClient = new QueryClient();
 
-const ConditionalNav = () => {
-  const location = useLocation();
-  if (location.pathname === "/auth" || location.pathname === "/calendar-success") return null;
+const ConditionalNav = () => <AppNavigation />;
+
+/** Routes OAuth / custom-scheme deep links back into the SPA on native. */
+const NativeDeepLinkRouter = () => {
+  const navigate = useNavigate();
+
+  useEffect(() => {
+    const handler = (event: Event) => {
+      const url = (event as CustomEvent<{ url: string }>).detail?.url;
+      if (!url) return;
+      try {
+        const parsed = new URL(url);
+        const path = parsed.pathname + parsed.search + parsed.hash;
+        if (path && path !== "/") navigate(path);
+      } catch {
+        /* ignore malformed URLs */
+      }
+    };
+    window.addEventListener("timebunny:app-url-open", handler);
+    return () => window.removeEventListener("timebunny:app-url-open", handler);
+  }, [navigate]);
+
+  return null;
+};
+
+const MobileAppShell = ({ children }: { children: ReactNode }) => {
+  const { useMobileChrome } = usePlatform();
   return (
-    <>
-      <CarrotHonorGlobal />
-      <FloatingNav />
-    </>
+    <div className={useMobileChrome ? "mobile-app-shell min-h-screen" : "min-h-screen"}>
+      {children}
+    </div>
   );
 };
 
@@ -75,7 +98,9 @@ const App = () => (
       <Sonner />
       <BrowserRouter>
         <LocalTimeProvider>
+        <MobileAppShell>
         <TokenCapture />
+        <NativeDeepLinkRouter />
         <Routes>
           <Route path="/" element={<Index />} />
           <Route path="/auth" element={<Auth />} />
@@ -89,6 +114,7 @@ const App = () => (
           <Route path="*" element={<NotFound />} />
         </Routes>
         <ConditionalNav />
+        </MobileAppShell>
         </LocalTimeProvider>
       </BrowserRouter>
     </TooltipProvider>

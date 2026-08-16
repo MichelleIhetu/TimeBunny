@@ -5,6 +5,7 @@ import {
   countNewScheduleItems,
   fillGoalGapsInSchedule,
   formatGoalsForSchedule,
+  removeCompletedGoalBlocks,
   schedulesEquivalent,
 } from "@/lib/goalsSchedule";
 import { toast } from "sonner";
@@ -23,7 +24,8 @@ export function useGoalScheduleSync(
     if (!enabled || syncingRef.current || schedule.length === 0 || goals.length === 0) return;
 
     const formatted = formatGoalsForSchedule(goals);
-    const merged = fillGoalGapsInSchedule(schedule, formatted, settings);
+    const cleaned = removeCompletedGoalBlocks(schedule, goals);
+    const merged = fillGoalGapsInSchedule(cleaned, formatted, settings);
     if (schedulesEquivalent(merged, schedule)) return;
 
     syncingRef.current = true;

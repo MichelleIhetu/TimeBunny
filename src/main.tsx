@@ -3,11 +3,14 @@ import { HelmetProvider } from "react-helmet-async";
 import App from "./App.tsx";
 import "./index.css";
 import { installEventKitDevMock } from "@/lib/calendar/dev/eventKitDevMock";
+import { bootstrapNativeApp } from "@/lib/nativeBootstrap";
 
 installEventKitDevMock();
 
-createRoot(document.getElementById("root")!).render(
-  <HelmetProvider>
-    <App />
-  </HelmetProvider>
-);
+void bootstrapNativeApp().then(() => {
+  createRoot(document.getElementById("root")!).render(
+    <HelmetProvider>
+      <App />
+    </HelmetProvider>,
+  );
+});

@@ -5,6 +5,7 @@ import SEO from "@/components/SEO";
 import { useAllGoalsForBadges } from "@/hooks/useAllGoalsForBadges";
 import {
   computeCategoryBadges,
+  BADGES_PER_CATEGORY,
   totalBadgeCount,
   totalUnlockedBadges,
   type CategoryBadge,
@@ -16,12 +17,15 @@ const VT: React.CSSProperties = { fontFamily: "'VT323', monospace" };
 function BadgeCard({ badge }: { badge: CategoryBadge }) {
   return (
     <div
-      className={`relative border-2 p-4 flex flex-col items-center text-center gap-2 transition-colors ${
+      className={`relative border-2 p-4 flex flex-col items-center text-center gap-2 transition-colors h-full min-h-[9.5rem] ${
         badge.unlocked
           ? "bg-white border-[#ddd6fe] shadow-[3px_3px_0px_#a78bfa]"
           : "bg-purple-50/80 border-[#ddd6fe]/70 opacity-80"
       }`}
     >
+      <span className="absolute top-2 left-2 text-[7px] text-[#a78bfa]/80" style={PIXEL}>
+        #{badge.tier}
+      </span>
       {!badge.unlocked && (
         <div className="absolute top-2 right-2 text-[#a78bfa]">
           <Lock className="w-3.5 h-3.5" />
@@ -100,7 +104,7 @@ export default function Badges() {
           </h1>
           <div className="h-1 w-24 bg-[#99f6e4] mx-auto shadow-[2px_2px_0px_#5b21b6]" />
           <p className="text-[#a78bfa] text-base md:text-lg max-w-md mx-auto px-4" style={VT}>
-            Level up in each category — from Bookworm to Super Reader, Gym Bunny to Fitness God.
+            Scroll each row to collect all {BADGES_PER_CATEGORY} badges per category — from beginner to legend.
           </p>
         </div>
 
@@ -159,13 +163,20 @@ export default function Badges() {
                     {group.label.toUpperCase()}
                   </h2>
                   <span className="text-sm text-[#a78bfa]" style={VT}>
-                    {group.unlockedCount}/3 earned
+                    {group.unlockedCount}/{BADGES_PER_CATEGORY} earned
                   </span>
                 </div>
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                  {group.badges.map((badge) => (
-                    <BadgeCard key={badge.id} badge={badge} />
-                  ))}
+                <div className="relative -mx-1">
+                  <div
+                    className="flex gap-3 overflow-x-auto pb-3 px-1 snap-x snap-mandatory scroll-smooth"
+                    style={{ scrollbarWidth: "thin" }}
+                  >
+                    {group.badges.map((badge) => (
+                      <div key={badge.id} className="flex-shrink-0 w-36 sm:w-40 snap-start">
+                        <BadgeCard badge={badge} />
+                      </div>
+                    ))}
+                  </div>
                 </div>
               </section>
             ))}

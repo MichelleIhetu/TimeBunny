@@ -7,7 +7,19 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { pinterestApi, type PinterestImage } from "@/lib/api/pinterest";
+import { pinterestApi } from "@/lib/api/pinterest";
+import type { PinterestImage } from "@/lib/api/pinterest";
+import {
+  clearPinterestOAuthParams,
+  completePinterestConnect,
+  disconnectPinterest,
+  fetchPinterestBoardPins,
+  fetchPinterestBoards,
+  getPinterestStatus,
+  isPinterestConfigured,
+  startPinterestConnect,
+  type PinterestBoard,
+} from "@/lib/api/pinterest";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/useAuth";
 import { toast } from "sonner";
@@ -144,18 +156,134 @@ const Moodboard = () => {
   const [newBoardName, setNewBoardName] = useState("");
   const [selectedBoard, setSelectedBoard] = useState("My Board");
 
+  // Pinterest account connection
+  const [pinterestConfigured, setPinterestConfigured] = useState<boolean | null>(null);
+  const [pinterestConnected, setPinterestConnected] = useState(false);
+  const [pinterestUsername, setPinterestUsername] = useState<string | null>(null);
+  const [pinterestConnectLoading, setPinterestConnectLoading] = useState(false);
+  const [pinterestBoards, setPinterestBoards] = useState<PinterestBoard[]>([]);
+  const [pinterestBoardsLoading, setPinterestBoardsLoading] = useState(false);
+  const [selectedPinterestBoard, setSelectedPinterestBoard] = useState<PinterestBoard | null>(null);
+  const [pinterestPins, setPinterestPins] = useState<PinterestImage[]>([]);
+  const [pinterestPinsLoading, setPinterestPinsLoading] = useState(false);
+
   const filteredAesthetics = aesthetics.filter(
     (a) =>
       a.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
       a.description.toLowerCase().includes(searchQuery.toLowerCase())
   );
 
-  // Load saved items
+  // Load saved items + Pinterest status; handle OAuth return
   useEffect(() => {
+    void isPinterestConfigured().then(setPinterestConfigured);
     if (user) {
       loadSavedItems();
+      refreshPinterestStatus();
+    } else {
+      setPinterestConnected(false);
+      setPinterestUsername(null);
     }
   }, [user]);
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const code = params.get("code");
+    if (!code || !user) return;
+
+    setPinterestConnectLoading(true);
+    completePinterestConnect(code, params.get("state"))
+      .then((username) => {
+        setPinterestConnected(true);
+        setPinterestUsername(username);
+        clearPinterestOAuthParams();
+        setActiveTab("pinterest");
+        toast.success(username ? `Connected as @${username}` : "Pinterest connected!");
+        return loadPinterestBoards();
+      })
+      .catch((err) => {
+        clearPinterestOAuthParams();
+        toast.error(err?.message || "Pinterest connection failed");
+      })
+      .finally(() => setPinterestConnectLoading(false));
+  }, [user]);
+
+  const refreshPinterestStatus = async () => {
+    try {
+      const status = await getPinterestStatus();
+      setPinterestConfigured(status.configured);
+      setPinterestConnected(status.connected);
+      setPinterestUsername(status.username);
+    } catch {
+      setPinterestConnected(false);
+      setPinterestUsername(null);
+    }
+  };
+
+  const loadPinterestBoards = async () => {
+    setPinterestBoardsLoading(true);
+    try {
+      const boards = await fetchPinterestBoards();
+      setPinterestBoards(boards);
+      if (boards.length === 0) toast("No boards found on your Pinterest account");
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : "Could not load Pinterest boards";
+      toast.error(message);
+      if (message.toLowerCase().includes("connect")) {
+        setPinterestConnected(false);
+      }
+    } finally {
+      setPinterestBoardsLoading(false);
+    }
+  };
+
+  const handlePinterestConnect = async () => {
+    if (!user) {
+      toast.error("Sign in to connect Pinterest");
+      return;
+    }
+    setPinterestConnectLoading(true);
+    try {
+      await startPinterestConnect();
+    } catch (err: unknown) {
+      toast.error(err instanceof Error ? err.message : "Could not start Pinterest login");
+      setPinterestConnectLoading(false);
+    }
+  };
+
+  const handlePinterestDisconnect = async () => {
+    try {
+      await disconnectPinterest();
+      setPinterestConnected(false);
+      setPinterestUsername(null);
+      setPinterestBoards([]);
+      setSelectedPinterestBoard(null);
+      setPinterestPins([]);
+      toast.success("Pinterest disconnected");
+    } catch {
+      toast.error("Could not disconnect Pinterest");
+    }
+  };
+
+  const handleSelectPinterestBoard = async (board: PinterestBoard) => {
+    setSelectedPinterestBoard(board);
+    setPinterestPinsLoading(true);
+    setPinterestPins([]);
+    try {
+      const pins = await fetchPinterestBoardPins(board.id);
+      setPinterestPins(pins);
+      if (pins.length === 0) toast("This board has no importable pins yet");
+    } catch (err: unknown) {
+      toast.error(err instanceof Error ? err.message : "Could not load board pins");
+    } finally {
+      setPinterestPinsLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (activeTab === "pinterest" && pinterestConnected && pinterestBoards.length === 0 && !pinterestBoardsLoading) {
+      void loadPinterestBoards();
+    }
+  }, [activeTab, pinterestConnected]);
 
   const loadSavedItems = async () => {
     if (!user) return;
@@ -324,10 +452,14 @@ const Moodboard = () => {
 
         {/* Tabs */}
         <Tabs value={activeTab} onValueChange={setActiveTab} className="mb-6">
-          <TabsList className="grid w-full grid-cols-4 max-w-lg">
+          <TabsList className="grid w-full grid-cols-5 max-w-2xl">
             <TabsTrigger value="browse" className="gap-1 text-xs sm:text-sm">
               <Sparkles className="w-3 h-3 sm:w-4 sm:h-4" />
               <span className="hidden sm:inline">Browse</span>
+            </TabsTrigger>
+            <TabsTrigger value="pinterest" className="gap-1 text-xs sm:text-sm">
+              <Heart className="w-3 h-3 sm:w-4 sm:h-4" />
+              <span className="hidden sm:inline">Pinterest</span>
             </TabsTrigger>
             <TabsTrigger value="search" className="gap-1 text-xs sm:text-sm">
               <Search className="w-3 h-3 sm:w-4 sm:h-4" />
@@ -442,6 +574,162 @@ const Moodboard = () => {
                 </motion.div>
               )}
             </AnimatePresence>
+          </TabsContent>
+
+          {/* Pinterest Tab — connect account & browse your boards */}
+          <TabsContent value="pinterest" className="mt-6">
+            <div className="max-w-2xl mx-auto mb-8 text-center space-y-4">
+              <h2 className="font-display text-lg text-foreground">📌 Your Pinterest</h2>
+              <p className="text-sm text-muted-foreground">
+                Connect your account to browse boards and save pins to TimeBunny
+              </p>
+
+              {!user ? (
+                <div className="rounded-xl border border-border bg-card/80 p-6">
+                  <p className="text-sm text-muted-foreground mb-4">Sign in to link your Pinterest account</p>
+                  <Link to="/auth?returnTo=/moodboard">
+                    <Button>Sign in</Button>
+                  </Link>
+                </div>
+              ) : pinterestConfigured === false ? (
+                <div className="rounded-xl border border-dashed border-border bg-card/60 p-6 text-left space-y-3">
+                  <p className="text-sm font-medium text-foreground">Pinterest connect — ready when you are</p>
+                  <p className="text-sm text-muted-foreground">
+                    Account linking is built and waiting for API credentials. Until then, use the{" "}
+                    <button type="button" className="underline text-primary" onClick={() => setActiveTab("import")}>
+                      Import
+                    </button>{" "}
+                    tab to paste a public board URL.
+                  </p>
+                  <p className="text-xs text-muted-foreground font-mono">
+                    Supabase secrets: PINTEREST_APP_ID, PINTEREST_APP_SECRET · redirect: /moodboard
+                  </p>
+                </div>
+              ) : pinterestConnected ? (
+                <div className="rounded-xl border border-border bg-card/80 p-4 flex flex-col sm:flex-row items-center justify-between gap-3">
+                  <div className="text-left">
+                    <p className="text-sm font-medium text-foreground flex items-center gap-2">
+                      <Check className="w-4 h-4 text-green-600" />
+                      Connected{pinterestUsername ? ` as @${pinterestUsername}` : ""}
+                    </p>
+                    <p className="text-xs text-muted-foreground mt-1">Pick a board below to import pins</p>
+                  </div>
+                  <div className="flex gap-2">
+                    <Button variant="outline" size="sm" onClick={loadPinterestBoards} disabled={pinterestBoardsLoading}>
+                      {pinterestBoardsLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : "Refresh boards"}
+                    </Button>
+                    <Button variant="ghost" size="sm" onClick={handlePinterestDisconnect}>
+                      Disconnect
+                    </Button>
+                  </div>
+                </div>
+              ) : (
+                <Button
+                  onClick={handlePinterestConnect}
+                  disabled={pinterestConnectLoading || pinterestConfigured !== true}
+                  className="gap-2"
+                >
+                  {pinterestConnectLoading ? (
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                  ) : (
+                    <Heart className="w-4 h-4" />
+                  )}
+                  Connect Pinterest
+                </Button>
+              )}
+            </div>
+
+            {pinterestConnected && (
+              <>
+                {pinterestBoardsLoading && pinterestBoards.length === 0 ? (
+                  <div className="text-center py-12">
+                    <Loader2 className="w-8 h-8 animate-spin text-primary mx-auto mb-3" />
+                    <p className="text-sm text-muted-foreground">Loading your boards...</p>
+                  </div>
+                ) : pinterestBoards.length > 0 ? (
+                  <>
+                    <p className="text-sm text-muted-foreground mb-3">Your boards — scroll sideways</p>
+                    <div className="flex gap-3 overflow-x-auto pb-4 snap-x snap-mandatory mb-6" style={{ scrollbarWidth: "thin" }}>
+                      {pinterestBoards.map((board) => (
+                        <button
+                          key={board.id}
+                          type="button"
+                          onClick={() => handleSelectPinterestBoard(board)}
+                          className={`flex-shrink-0 w-40 snap-start rounded-xl border overflow-hidden text-left transition-all hover:scale-[1.02] ${
+                            selectedPinterestBoard?.id === board.id
+                              ? "border-primary ring-2 ring-primary/30"
+                              : "border-border bg-card"
+                          }`}
+                        >
+                          <div className="h-24 bg-muted">
+                            {board.imageUrl ? (
+                              <img src={board.imageUrl} alt="" className="w-full h-full object-cover" />
+                            ) : (
+                              <div className="w-full h-full flex items-center justify-center text-2xl">📌</div>
+                            )}
+                          </div>
+                          <div className="p-2">
+                            <p className="text-xs font-semibold line-clamp-2">{board.name}</p>
+                            {board.pinCount != null && (
+                              <p className="text-[10px] text-muted-foreground mt-0.5">{board.pinCount} pins</p>
+                            )}
+                          </div>
+                        </button>
+                      ))}
+                    </div>
+                  </>
+                ) : (
+                  <div className="text-center py-8">
+                    <Button variant="outline" onClick={loadPinterestBoards} disabled={pinterestBoardsLoading}>
+                      Load my boards
+                    </Button>
+                  </div>
+                )}
+
+                {selectedPinterestBoard && (
+                  <div className="space-y-4">
+                    <div className="flex items-center justify-between gap-2">
+                      <h3 className="font-display text-base">{selectedPinterestBoard.name}</h3>
+                      {pinterestPins.length > 0 && (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => {
+                            pinterestPins.forEach((img) =>
+                              saveImage(img.imageUrl, img.title, img.sourceUrl, selectedPinterestBoard.name),
+                            );
+                          }}
+                        >
+                          <Bookmark className="w-4 h-4 mr-1" />
+                          Save all
+                        </Button>
+                      )}
+                    </div>
+
+                    {pinterestPinsLoading ? (
+                      <div className="text-center py-12">
+                        <Loader2 className="w-8 h-8 animate-spin text-primary mx-auto mb-3" />
+                        <p className="text-sm text-muted-foreground">Loading pins...</p>
+                      </div>
+                    ) : (
+                      <div className="columns-2 md:columns-3 lg:columns-4 gap-4">
+                        {pinterestPins.map((img, i) => (
+                          <ImageCard
+                            key={`pinterest-pin-${i}`}
+                            imageUrl={img.imageUrl}
+                            title={img.title}
+                            sourceUrl={img.sourceUrl}
+                            onSave={() =>
+                              saveImage(img.imageUrl, img.title, img.sourceUrl, selectedPinterestBoard.name)
+                            }
+                          />
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </>
+            )}
           </TabsContent>
 
           {/* Search Tab - Pinterest Search */}

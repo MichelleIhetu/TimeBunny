@@ -83,6 +83,12 @@ const readLocal = (): LocalSession => {
   }
 };
 
+/** True when today's session already has imported calendar tasks (memory or local cache). */
+export const hasSyncedCalendarToday = (tasks?: AnalyzedTask[]): boolean => {
+  if (tasks && tasks.length > 0) return true;
+  return (readLocal().calendarImport?.length ?? 0) > 0;
+};
+
 const writeLocal = (patch: Partial<LocalSession>) => {
   try {
     const cur = readLocal();
@@ -207,7 +213,10 @@ export function useSchedulePersistence(userId: string | undefined) {
     // Always check local first for instant restore
     const local = readLocal();
     if (!userId) {
-      return local.schedule.length > 0 || local.journalText || local.vibeChecks.length > 0
+      return local.schedule.length > 0 ||
+        local.journalText ||
+        local.vibeChecks.length > 0 ||
+        (local.calendarImport?.length ?? 0) > 0
         ? local
         : null;
     }

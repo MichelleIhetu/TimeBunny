@@ -1,4 +1,4 @@
-import { CarrotBadgeIcon } from "@/components/GrowingCarrot";
+import CarrotIcon from "@/components/CarrotIcon";
 
 const PIXEL: React.CSSProperties = { fontFamily: "'Press Start 2P', cursive" };
 const VT: React.CSSProperties = { fontFamily: "'VT323', monospace" };
@@ -16,7 +16,7 @@ export default function CarrotHonorBadge({ count }: Props) {
       className="fixed top-4 right-4 z-50 flex items-center gap-2 rounded-full border-2 border-[#ddd6fe] bg-white px-3 py-2 shadow-[3px_3px_0px_#a78bfa]"
       title={`${count} goal${count === 1 ? "" : "s"} harvested`}
     >
-      <CarrotBadgeIcon className="h-6 w-6" />
+      <CarrotIcon className="h-6 w-6" />
       <div className="flex flex-col leading-none">
         <span className="text-[8px] text-[#a78bfa]" style={PIXEL}>
           HARVEST
