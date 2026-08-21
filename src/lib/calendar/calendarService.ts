@@ -146,7 +146,25 @@ export async function syncAllCalendarProviders(opts: {
   let newlyAnalyzed: AnalyzedTask[] = [];
 
   if (newEvents.length > 0) {
-    newlyAnalyzed = await analyzeCalendarEvents(newEvents);
+    try {
+      newlyAnalyzed = await analyzeCalendarEvents(newEvents);
+    } catch (err) {
+      console.warn("[calendar-sync] analyze failed, using raw events", err);
+      newlyAnalyzed = newEvents.map((e) => ({
+        id: e.id,
+        title: e.title,
+        date: e.date ?? null,
+        startTime: e.startTime ?? null,
+        endTime: e.endTime ?? null,
+        final_category: "event",
+        final_importance: "major" as const,
+        lead_days: 0,
+        recommended_start_date: e.date ?? null,
+        prep_milestones: [],
+        rationale: "",
+        symbolic: { category: "event", matchedKeyword: "" },
+      }));
+    }
   }
 
   const { tasks, newCount, removedCount } = mergeAnalyzedCalendarTasks(
@@ -161,6 +179,7 @@ export async function syncAllCalendarProviders(opts: {
     removedCount,
     totalEvents: events.length,
     needsEventKitPermission,
+    newEvents,
   };
 }
 

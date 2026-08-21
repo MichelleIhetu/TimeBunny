@@ -7,7 +7,7 @@ type GoogleCalendarConnectionResult = {
 };
 
 export const GOOGLE_CALENDAR_SCOPES =
-  "openid email profile https://www.googleapis.com/auth/calendar.readonly https://www.googleapis.com/auth/calendar.events.readonly";
+  "openid email profile https://www.googleapis.com/auth/calendar.readonly https://www.googleapis.com/auth/calendar.events.readonly https://www.googleapis.com/auth/calendar.events";
 
 const waitForAuthSession = async (timeoutMs = 6000) => {
   const started = Date.now();
@@ -32,8 +32,8 @@ export const persistGoogleTokens = async (session: any) => {
       refresh_token: session.provider_refresh_token || null,
       access_token: session.provider_token || null,
       expires_in: 3600,
-      scope:
-        "https://www.googleapis.com/auth/calendar.readonly https://www.googleapis.com/auth/calendar.events.readonly",
+        scope:
+          "https://www.googleapis.com/auth/calendar.readonly https://www.googleapis.com/auth/calendar.events.readonly https://www.googleapis.com/auth/calendar.events",
     },
   });
 };

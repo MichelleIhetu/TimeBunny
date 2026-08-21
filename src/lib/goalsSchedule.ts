@@ -106,9 +106,13 @@ export const goalSuggestionsToScheduleItems = (suggestions: GoalSuggestion[]): S
     goalId: s.goalId,
   }));
 
-const parseTimeToMinutes = (time: string): number => {
-  const [h, m] = time.split(":").map(Number);
-  return h * 60 + (m || 0);
+const parseTimeToMinutes = (time: string): number | null => {
+  const match = time.trim().match(/^(\d{1,2}):(\d{2})/);
+  if (!match) return null;
+  const h = Number(match[1]);
+  const m = Number(match[2]);
+  if (!Number.isFinite(h) || !Number.isFinite(m) || h < 0 || h > 23 || m < 0 || m > 59) return null;
+  return h * 60 + m;
 };
 
 const formatTimeMinutes = (minutes: number): string => {
@@ -117,19 +121,90 @@ const formatTimeMinutes = (minutes: number): string => {
   return `${h.toString().padStart(2, "0")}:${m.toString().padStart(2, "0")}`;
 };
 
-export const getItemDurationMinutes = (item: ScheduleItem, schedule: ScheduleItem[]): number => {
+const MAX_INFERRED_GAP_MINUTES = 120;
+const MAX_FOCUS_BLOCK_MINUTES = 90;
+const MAX_RELAX_BLOCK_MINUTES = 45;
+const DEFAULT_FOCUS_BLOCK_MINUTES = 30;
+const DEFAULT_RELAX_BLOCK_MINUTES = 25;
+
+export function isRelaxationBlock(title: string): boolean {
+  const t = title.toLowerCase();
+  return /\b(break|wind\s*down|winding\s*down|relax|bedtime|sleep|rest|decompress|unwind)\b/.test(t);
+}
+
+export type ScheduleTimingContext = {
+  bedTime?: string;
+};
+
+export const getItemDurationMinutes = (
+  item: ScheduleItem,
+  schedule: ScheduleItem[],
+  context?: ScheduleTimingContext,
+): number => {
+  const relaxation = isRelaxationBlock(item.title);
+  const maxBlock = relaxation ? MAX_RELAX_BLOCK_MINUTES : MAX_FOCUS_BLOCK_MINUTES;
+  const defaultBlock = relaxation ? DEFAULT_RELAX_BLOCK_MINUTES : DEFAULT_FOCUS_BLOCK_MINUTES;
+
+  const start = parseTimeToMinutes(item.time);
+  if (start === null) return defaultBlock;
+
   if (item.endTime) {
-    const duration = parseTimeToMinutes(item.endTime) - parseTimeToMinutes(item.time);
-    if (duration > 0) return duration;
+    const end = parseTimeToMinutes(item.endTime);
+    if (end !== null) {
+      let duration = end - start;
+      if (duration <= 0) duration += 24 * 60;
+      if (duration > 0 && duration <= maxBlock * 2) {
+        return Math.min(duration, maxBlock);
+      }
+    }
   }
+
   const sorted = [...schedule].sort((a, b) => a.time.localeCompare(b.time));
   const idx = sorted.findIndex((s) => s.id === item.id);
+
   if (idx >= 0 && idx < sorted.length - 1) {
-    const duration = parseTimeToMinutes(sorted[idx + 1].time) - parseTimeToMinutes(item.time);
-    if (duration > 0) return duration;
+    const nextStart = parseTimeToMinutes(sorted[idx + 1].time);
+    if (nextStart !== null) {
+      let gap = nextStart - start;
+      if (gap <= 0) gap += 24 * 60;
+      if (gap > 0 && gap <= MAX_INFERRED_GAP_MINUTES) {
+        return Math.min(gap, maxBlock);
+      }
+    }
   }
-  return 30;
+
+  if (context?.bedTime) {
+    const bed = parseTimeToMinutes(context.bedTime);
+    if (bed !== null) {
+      let untilBed = bed - start;
+      if (untilBed <= 0) untilBed += 24 * 60;
+      if (untilBed > 0 && untilBed <= 180) {
+        return Math.min(untilBed, maxBlock);
+      }
+    }
+  }
+
+  return defaultBlock;
 };
+
+export function getPomodoroDurationSeconds(
+  item: ScheduleItem,
+  schedule: ScheduleItem[],
+  context?: ScheduleTimingContext,
+): number {
+  return getItemDurationMinutes(item, schedule, context) * 60;
+}
+
+export function formatPomodoroTimer(totalSeconds: number): string {
+  const sec = Math.max(0, Math.floor(totalSeconds));
+  const h = Math.floor(sec / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  const s = sec % 60;
+  if (h > 0) {
+    return `${h}:${m.toString().padStart(2, "0")}:${s.toString().padStart(2, "0")}`;
+  }
+  return `${m}:${s.toString().padStart(2, "0")}`;
+}
 
 export const isGoalScheduleItem = (item: ScheduleItem): boolean =>
   Boolean(item.goalId) || item.title.includes("🎯") || /^Goal:/i.test(item.description ?? "");
@@ -188,15 +263,19 @@ export const findScheduleGaps = (
   minGapMinutes = 15,
 ): Array<{ start: number; end: number }> => {
   const sorted = [...schedule].sort((a, b) => a.time.localeCompare(b.time));
-  const occupied: Array<{ start: number; end: number }> = sorted.map((item, idx) => {
+  const occupied: Array<{ start: number; end: number }> = sorted.flatMap((item, idx) => {
     const start = parseTimeToMinutes(item.time);
-    let end = item.endTime
-      ? parseTimeToMinutes(item.endTime)
-      : idx < sorted.length - 1
-        ? parseTimeToMinutes(sorted[idx + 1].time)
-        : start + getItemDurationMinutes(item, schedule);
+    if (start === null) return [];
+
+    let end: number | null = item.endTime ? parseTimeToMinutes(item.endTime) : null;
+    if (end === null && idx < sorted.length - 1) {
+      end = parseTimeToMinutes(sorted[idx + 1].time);
+    }
+    if (end === null) {
+      end = start + getItemDurationMinutes(item, schedule);
+    }
     if (end <= start) end = start + 30;
-    return { start, end };
+    return [{ start, end }];
   });
 
   occupied.sort((a, b) => a.start - b.start);
@@ -268,8 +347,10 @@ export const fillGoalGapsInSchedule = (
   if (goals.length === 0) return schedule;
 
   const nowMinutes = new Date().getHours() * 60 + new Date().getMinutes();
-  const dayStart = Math.max(parseTimeToMinutes(settings.wakeTime), nowMinutes);
+  const wakeMinutes = parseTimeToMinutes(settings.wakeTime);
   const dayEnd = parseTimeToMinutes(settings.bedTime);
+  if (wakeMinutes === null || dayEnd === null) return attachGoalIdsToSchedule(schedule, goals);
+  const dayStart = Math.max(wakeMinutes, nowMinutes);
   if (dayEnd <= dayStart) return attachGoalIdsToSchedule(schedule, goals);
 
   let working = attachGoalIdsToSchedule(schedule, goals);

@@ -17,7 +17,7 @@ import { getFormattedDate, getTimeOfDayGreeting, getDayName } from "@/lib/dayGre
 import { useAuth } from "@/hooks/useAuth";
 import { useGoals } from "@/hooks/useGoals";
 import { useSchedulePersistence, saveScheduleSnapshot } from "@/hooks/useSchedulePersistence";
-import { buildGoalsSchedulePrompt, formatGoalsForSchedule, getItemDurationMinutes, resolveGoalIdFromItem } from "@/lib/goalsSchedule";
+import { buildGoalsSchedulePrompt, formatGoalsForSchedule, formatPomodoroTimer, getItemDurationMinutes, getPomodoroDurationSeconds, resolveGoalIdFromItem } from "@/lib/goalsSchedule";
 import { CALENDAR_SYNCED_EVENT } from "@/lib/calendarSync";
 import { CRITICAL_ONLY_COMFORT_MESSAGES } from "@/lib/vibeStressDetection";
 import {
@@ -26,11 +26,12 @@ import {
   playCompletionDing,
   playCriticalVictoryFanfare,
 } from "@/lib/pomodoroBunny";
-import PomodoroBunnyCompanion from "@/components/PomodoroBunnyCompanion";
+import { toast } from "sonner";
+import { markCalendarEventComplete } from "@/lib/calendar/markCalendarEventComplete";
+import { resolveCalendarEventForScheduleItem } from "@/lib/calendar/scheduleCalendarMatch";
 import { loadJournalSpeechBubblePosition } from "@/lib/journalSpeechBubblePosition";
 import { supabase } from "@/integrations/supabase/client";
-import { toast } from "sonner";
-import libraryBg from "@/assets/library-background.png";
+import PomodoroBunnyCompanion from "@/components/PomodoroBunnyCompanion";
 import cozyBg from "@/assets/cozy-background.png";
 import scheduleBg from "@/assets/schedule-background.png";
 import bunnyMascot from "@/assets/bunny-mascot.png";
@@ -66,7 +67,7 @@ interface WizardInterfaceProps {
 
 // ─── SCENE DEFINITIONS ───
 // Each scene has: background image, bunny position, bunny size, dialogue messages
-type Scene = "library" | "cozy" | "energy" | "stress" | "schedule";
+type Scene = "cozy" | "energy" | "stress" | "schedule";
 
 /** Journal / energy / stress — +2 paces up & right, midsize scale on chair */
 const WIREframe_CHAIR_BUNNY = {
@@ -104,18 +105,6 @@ const ENERGY_STRESS_SPEECH_BUBBLE_CLASS =
   "absolute z-50 pointer-events-none w-56 sm:w-64 right-[calc(100%-1.65rem)] sm:right-[calc(100%-1.5rem)] -top-[48%] sm:-top-[52%] -translate-y-36";
 
 const SCENE_CONFIG = {
-  library: {
-    background: libraryBg,
-    bunnyPosition: "bottom-[0%] right-[-1%]",
-    bunnySize: "w-[22rem]",
-    backgroundClass: "object-cover object-center",
-    hideBubble: false,
-    messages: [
-      `${getTimeOfDayGreeting()}! It's ${getFormattedDate()} 🗓️`,
-      "Hi there, my name is TimeBunny! Welcome to my home!",
-      "Click on one of the books so we can get an idea of what your schedule is like!",
-    ],
-  },
   cozy: {
     background: cozyBg,
     bunnyPosition: COZY_CHAIR_BUNNY.position,
@@ -165,7 +154,7 @@ const SCENE_CONFIG = {
 
 type WizardStep = "greeting" | "mood" | "stress" | "sleep" | "breaks" | "tasks";
 
-const WizardInterface = ({ settings, onSettingsChange, onComplete, isLoading, generatedSchedule, initialScene = "library", onBackFromInitial, onUpdateSchedule, onScheduleChange, analyzedCalendarTasks = [], requireJournal = false, comfortMode = null, onComfortDismiss }: WizardInterfaceProps) => {
+const WizardInterface = ({ settings, onSettingsChange, onComplete, isLoading, generatedSchedule, initialScene = "cozy", onBackFromInitial, onUpdateSchedule, onScheduleChange, analyzedCalendarTasks = [], requireJournal = false, comfortMode = null, onComfortDismiss }: WizardInterfaceProps) => {
   const navigate = useNavigate();
   const { user } = useAuth();
   const { goals, addGoalProgress } = useGoals();
@@ -173,8 +162,15 @@ const WizardInterface = ({ settings, onSettingsChange, onComplete, isLoading, ge
   const { saveJournal, loadTodaySchedule, saveSchedule } = useSchedulePersistence(user?.id);
   // ─── SCENE STATE (single source of truth) ───
   const [scene, setScene] = useState<Scene>(initialScene);
-
   const [step, setStep] = useState<WizardStep>("tasks");
+
+  useEffect(() => {
+    setScene(initialScene);
+    if (initialScene === "cozy") {
+      setStep("tasks");
+    }
+  }, [initialScene]);
+
   const [breakFrequency, setBreakFrequency] = useState<"minimal" | "moderate" | "frequent">("moderate");
   const [taskEntries, setTaskEntries] = useState<TaskEntry[]>([
     { id: "1", title: "", duration: "", deadline: "", priority: "medium" },
@@ -238,7 +234,6 @@ const WizardInterface = ({ settings, onSettingsChange, onComplete, isLoading, ge
       setPersistedCalendarAnalysis(analyzedCalendarTasks);
     }
   }, [analyzedCalendarTasks]);
-  const [activeBookIndex, setActiveBookIndex] = useState<number | null>(null);
   const [showSpeechBubble, setShowSpeechBubble] = useState(false);
   const [typedText, setTypedText] = useState("");
   const [isTyping, setIsTyping] = useState(false);
@@ -309,6 +304,7 @@ const WizardInterface = ({ settings, onSettingsChange, onComplete, isLoading, ge
   const [celebrationIsCritical, setCelebrationIsCritical] = useState(false);
   const [criticalVictoryTick, setCriticalVictoryTick] = useState(0);
   const [completedTasks, setCompletedTasks] = useState<Set<string>>(new Set());
+  const [markingCalendarEvent, setMarkingCalendarEvent] = useState(false);
 
   const celebrationMessages = [
     "You crushed it! On to the next one~",
@@ -338,16 +334,7 @@ const WizardInterface = ({ settings, onSettingsChange, onComplete, isLoading, ge
   }, [timerRunning]);
 
   const startTask = (item: ScheduleItem) => {
-    const sorted = [...generatedSchedule].sort((a, b) => a.time.localeCompare(b.time));
-    const idx = sorted.findIndex(s => s.id === item.id);
-    let durationMinutes = 30; // default 30 min
-    if (idx < sorted.length - 1) {
-      const [h1, m1] = sorted[idx].time.split(":").map(Number);
-      const [h2, m2] = sorted[idx + 1].time.split(":").map(Number);
-      durationMinutes = (h2 * 60 + m2) - (h1 * 60 + m1);
-      if (durationMinutes <= 0) durationMinutes = 30;
-    }
-    const totalSec = durationMinutes * 60;
+    const totalSec = getPomodoroDurationSeconds(item, generatedSchedule, { bedTime: settings.bedTime });
     setActiveTask(item);
     setTimerDuration(totalSec);
     setTimerSeconds(totalSec);
@@ -380,7 +367,45 @@ const WizardInterface = ({ settings, onSettingsChange, onComplete, isLoading, ge
     if (timerRef.current) clearInterval(timerRef.current);
   };
 
-  const completeCurrentTask = useCallback(() => {
+  const runCompletionCelebration = useCallback(
+    (task: ScheduleItem, isCritical: boolean) => {
+      const celebrationMs = isCritical ? 5500 : 4000;
+      const showOverlay = () => setShowCelebration(true);
+      if (isCritical) {
+        setTimeout(showOverlay, 1100);
+      } else {
+        showOverlay();
+      }
+
+      setTimeout(() => {
+        setShowCelebration(false);
+        setCelebrationIsCritical(false);
+        const sorted = [...generatedSchedule].sort((a, b) => a.time.localeCompare(b.time));
+        const currentIdx = sorted.findIndex((s) => s.id === task.id);
+        if (currentIdx < sorted.length - 1) {
+          startTask(sorted[currentIdx + 1]);
+        } else {
+          stopTask();
+        }
+      }, celebrationMs);
+    },
+    [generatedSchedule],
+  );
+
+  const applyTaskFullyComplete = useCallback(
+    (task: ScheduleItem) => {
+      const remaining = generatedSchedule.filter((s) => s.id !== task.id);
+      onScheduleChange?.(remaining);
+      setTimerRunning(false);
+      if (timerRef.current) clearInterval(timerRef.current);
+      setActiveTask(null);
+      setTimerSeconds(0);
+      toast.success("Task marked complete!");
+    },
+    [generatedSchedule, onScheduleChange],
+  );
+
+  const completeSession = useCallback(() => {
     if (!activeTask) return;
 
     const isCritical = isCriticalScheduleTask(activeTask, calendarAnalysis, comfortMode);
@@ -398,44 +423,67 @@ const WizardInterface = ({ settings, onSettingsChange, onComplete, isLoading, ge
     const goalId = resolveGoalIdFromItem(activeTask, goals);
     if (goalId && user) {
       const elapsedSec = Math.max(0, timerDuration - timerSeconds);
-      const scheduledMinutes = getItemDurationMinutes(activeTask, generatedSchedule);
+      const scheduledMinutes = getItemDurationMinutes(activeTask, generatedSchedule, { bedTime: settings.bedTime });
       const hours =
         elapsedSec >= 60 ? elapsedSec / 3600 : Math.max(scheduledMinutes / 60, 0.25);
-      addGoalProgress(goalId, hours, `Completed: ${activeTask.title}`, true);
+      addGoalProgress(goalId, hours, `Session: ${activeTask.title}`, true);
       toast.success(`+${Math.round(hours * 60)} min logged toward your goal 🎯`);
     }
 
-    setCompletedTasks(prev => new Set(prev).add(activeTask.id));
     setTimerRunning(false);
     if (timerRef.current) clearInterval(timerRef.current);
 
-    const celebrationMs = isCritical ? 5500 : 4000;
-    const showOverlay = () => setShowCelebration(true);
-    if (isCritical) {
-      setTimeout(showOverlay, 1100);
-    } else {
-      showOverlay();
+    runCompletionCelebration(activeTask, isCritical);
+  }, [
+    activeTask,
+    generatedSchedule,
+    goals,
+    user,
+    timerDuration,
+    timerSeconds,
+    addGoalProgress,
+    calendarAnalysis,
+    comfortMode,
+    runCompletionCelebration,
+  ]);
+
+  const markTaskComplete = useCallback(async () => {
+    if (!activeTask || completedTasks.has(activeTask.id) || markingCalendarEvent) return;
+
+    setCompletedTasks((prev) => new Set(prev).add(activeTask.id));
+    setTimerRunning(false);
+    if (timerRef.current) clearInterval(timerRef.current);
+
+    const linkedCalendarEvent = resolveCalendarEventForScheduleItem(activeTask, calendarAnalysis);
+    if (linkedCalendarEvent) {
+      setMarkingCalendarEvent(true);
+      try {
+        const result = await markCalendarEventComplete(linkedCalendarEvent);
+        if (result.ok) {
+          toast.success(result.message ?? "Marked done in Google Calendar.");
+          setPersistedCalendarAnalysis((prev) =>
+            prev.filter((t) => t.id !== linkedCalendarEvent.eventId),
+          );
+        } else if (result.openedExternally) {
+          toast.info(result.message ?? "Opened Google Calendar.");
+        } else {
+          toast.error(result.message ?? "Could not update Google Calendar.");
+        }
+      } finally {
+        setMarkingCalendarEvent(false);
+      }
     }
 
-    setTimeout(() => {
-      setShowCelebration(false);
-      setCelebrationIsCritical(false);
-      // Auto-advance to next task
-      const sorted = [...generatedSchedule].sort((a, b) => a.time.localeCompare(b.time));
-      const currentIdx = sorted.findIndex(s => s.id === activeTask.id);
-      if (currentIdx < sorted.length - 1) {
-        startTask(sorted[currentIdx + 1]);
-      } else {
-        stopTask();
-      }
-    }, celebrationMs);
-  }, [activeTask, generatedSchedule, goals, user, timerDuration, timerSeconds, addGoalProgress, calendarAnalysis, comfortMode]);
+    applyTaskFullyComplete(activeTask);
+  }, [
+    activeTask,
+    calendarAnalysis,
+    completedTasks,
+    markingCalendarEvent,
+    applyTaskFullyComplete,
+  ]);
 
-  const formatTimer = (sec: number) => {
-    const m = Math.floor(sec / 60);
-    const s = sec % 60;
-    return `${m.toString().padStart(2, "0")}:${s.toString().padStart(2, "0")}`;
-  };
+  const formatTimer = formatPomodoroTimer;
 
   useEffect(() => {
     if (scene === "schedule" && comfortMode !== "critical_only") {
@@ -581,26 +629,6 @@ const WizardInterface = ({ settings, onSettingsChange, onComplete, isLoading, ge
     setImportedEvents(importedEvents.filter(e => e.id !== id));
   };
 
-  const addTask = () => {
-    setTaskEntries(prev => [...prev, {
-      id: Date.now().toString(),
-      title: "",
-      duration: "",
-      deadline: "",
-      priority: "medium",
-    }]);
-  };
-
-  const updateTask = (id: string, field: keyof TaskEntry, value: string) => {
-    setTaskEntries(prev => prev.map(t => t.id === id ? { ...t, [field]: value } : t));
-  };
-
-  const removeTask = (id: string) => {
-    if (taskEntries.length > 1) {
-      setTaskEntries(prev => prev.filter(t => t.id !== id));
-    }
-  };
-
   // Distress keyword detection
   const distressKeywords = [
     "failed", "fail", "bombed", "flunked", "messed up",
@@ -720,15 +748,6 @@ const WizardInterface = ({ settings, onSettingsChange, onComplete, isLoading, ge
       },
     );
   };
-
-  const hasValidTasks = taskEntries.some(t => t.title.trim());
-
-  // Book colors for the shelves
-  const shelfBooks = [
-    ["hsl(170 40% 60%)", "hsl(340 60% 70%)", "hsl(170 35% 55%)", "hsl(330 50% 75%)", "hsl(40 50% 80%)", "hsl(340 55% 65%)", "hsl(170 30% 65%)", "hsl(330 45% 70%)", "hsl(340 50% 60%)"],
-    ["hsl(340 55% 75%)", "hsl(200 60% 65%)", "hsl(340 50% 70%)", "hsl(50 50% 70%)", "hsl(200 55% 60%)", "hsl(340 45% 65%)", "hsl(200 50% 70%)", "hsl(330 55% 75%)"],
-    ["hsl(280 40% 65%)", "hsl(200 50% 60%)", "hsl(50 55% 65%)", "hsl(340 50% 70%)", "hsl(40 45% 75%)", "hsl(200 55% 65%)", "hsl(50 50% 60%)", "hsl(340 45% 60%)"],
-  ];
 
   // ─── BUNNY CLICK HANDLER ───
   const handleBunnyClick = () => {
@@ -902,94 +921,6 @@ const WizardInterface = ({ settings, onSettingsChange, onComplete, isLoading, ge
               </motion.div>
             )}
           </AnimatePresence>
-        </div>
-      )}
-
-      {/* Task step: interactive bookshelf — library scene only */}
-      {scene === "library" && step === "tasks" && (
-        <div className="relative z-10 flex-1 flex">
-          {/* Left side - Bookshelf with clickable books */}
-          <div className="w-1/2 relative flex flex-col justify-center p-4">
-            <div className="absolute inset-0 flex flex-col justify-between py-[5%] px-[4%]">
-              {shelfBooks.map((shelf, shelfIdx) => (
-                <div key={shelfIdx} className="flex items-end gap-[2px] h-[28%] px-[2%] pb-[2%]">
-                  {shelf.map((_, bookIdx) => {
-                    const globalIdx = shelfIdx * shelf.length + bookIdx;
-                    return (
-                      <button
-                        key={bookIdx}
-                        onClick={() => setIsCalendarModalOpen(true)}
-                        className="flex-1 h-full rounded-sm transition-all hover:brightness-110 hover:scale-y-105 cursor-pointer"
-                        style={{ background: "transparent" }}
-                        title={`Book ${globalIdx + 1} — click to import calendar`}
-                      />
-                    );
-                  })}
-                </div>
-              ))}
-            </div>
-          </div>
-
-          {/* Right side - Task input panel */}
-          <div className="w-1/2 relative flex flex-col justify-end p-4">
-            <div className="absolute top-4 left-4 right-4 bottom-[45%] z-20">
-              <AnimatePresence mode="wait">
-                {activeBookIndex !== null && taskEntries[activeBookIndex] ? (
-                  <motion.div
-                    key={activeBookIndex}
-                    initial={{ opacity: 0, y: 10 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    exit={{ opacity: 0, y: -10 }}
-                    className="bg-card/95 backdrop-blur-md rounded-xl border border-primary/20 shadow-xl p-4 space-y-3"
-                  >
-                    <div className="flex items-center justify-between">
-                      <span className="pixel-title-alt text-xs" style={{ color: "hsl(280 40% 50%)" }}>Book {activeBookIndex + 1}</span>
-                      <button onClick={() => setActiveBookIndex(null)} className="text-muted-foreground hover:text-foreground">
-                        <X className="w-4 h-4" />
-                      </button>
-                    </div>
-                    <input
-                      type="text"
-                      value={taskEntries[activeBookIndex].title}
-                      onChange={(e) => updateTask(taskEntries[activeBookIndex].id, "title", e.target.value)}
-                      placeholder="Write your task here..."
-                      className="w-full bg-background/50 border border-primary/20 rounded-lg p-2 text-foreground text-sm placeholder:text-muted-foreground/50 focus:outline-none focus:border-primary/50"
-                      autoFocus
-                    />
-                    <div className="flex gap-2">
-                      <input type="text" value={taskEntries[activeBookIndex].duration} onChange={(e) => updateTask(taskEntries[activeBookIndex].id, "duration", e.target.value)} placeholder="Duration (e.g., 2h)" className="flex-1 bg-muted/20 border border-primary/10 rounded-lg px-2 py-1 text-xs text-foreground placeholder:text-muted-foreground/40 focus:outline-none" />
-                      <input type="text" value={taskEntries[activeBookIndex].deadline} onChange={(e) => updateTask(taskEntries[activeBookIndex].id, "deadline", e.target.value)} placeholder="Deadline" className="flex-1 bg-muted/20 border border-primary/10 rounded-lg px-2 py-1 text-xs text-foreground placeholder:text-muted-foreground/40 focus:outline-none" />
-                      <select value={taskEntries[activeBookIndex].priority} onChange={(e) => updateTask(taskEntries[activeBookIndex].id, "priority", e.target.value)} className="bg-muted/20 border border-primary/10 rounded-lg px-2 py-1 text-xs text-foreground focus:outline-none">
-                        <option value="high">🔴 High</option>
-                        <option value="medium">🟡 Med</option>
-                        <option value="low">🟢 Low</option>
-                      </select>
-                    </div>
-                  </motion.div>
-                ) : (
-                  <motion.div key="prompt" initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="flex flex-col items-center gap-3 pt-4">
-                    {hasValidTasks && (
-                      <div className="bg-card/80 backdrop-blur-sm rounded-lg p-2 border border-primary/10 w-full">
-                        <p className="text-xs text-muted-foreground mb-1">Tasks added:</p>
-                        {taskEntries.filter(t => t.title.trim()).map((t) => (
-                          <div key={t.id} className="text-xs text-foreground flex items-center gap-1">
-                            <span>{t.priority === "high" ? "🔴" : t.priority === "low" ? "🟢" : "🟡"}</span>
-                            <span className="truncate">{t.title}</span>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                    {hasValidTasks && (
-                      <Button onClick={handleComplete} disabled={isLoading} className="w-full mt-2 gap-2 font-body text-sm" size="sm">
-                        <PlayCircle className="w-4 h-4" />
-                        {isLoading ? "Generating..." : "Generate Schedule"}
-                      </Button>
-                    )}
-                  </motion.div>
-                )}
-              </AnimatePresence>
-            </div>
-          </div>
         </div>
       )}
 
@@ -1299,13 +1230,13 @@ const WizardInterface = ({ settings, onSettingsChange, onComplete, isLoading, ge
                     Vibe Check
                   </button>
                   <button
-                    onClick={completeCurrentTask}
-                    disabled={completedTasks.has(activeTask.id)}
-                    className="px-6 py-2 rounded-full transition-all hover:scale-105 active:scale-95 flex items-center gap-2 disabled:opacity-50"
+                    onClick={completeSession}
+                    className="px-6 py-2 rounded-full transition-all hover:scale-105 active:scale-95 flex items-center gap-2"
                     style={{ background: "hsl(150 60% 55%)", fontFamily: "var(--font-body)", color: "white" }}
+                    title="Finish this focus session and move to the next block"
                   >
                     <CheckCircle2 className="w-4 h-4" />
-                    {completedTasks.has(activeTask.id) ? "Done!" : "Complete ✓"}
+                    Session Done
                   </button>
                   <button
                     onClick={stopTask}
@@ -1411,6 +1342,19 @@ const WizardInterface = ({ settings, onSettingsChange, onComplete, isLoading, ge
                 active={!!activeTask && !showCelebration}
                 victoryTrigger={criticalVictoryTick}
               />
+
+              <button
+                type="button"
+                onClick={markTaskComplete}
+                disabled={completedTasks.has(activeTask.id) || markingCalendarEvent}
+                className="fixed bottom-4 right-4 z-[55] flex items-center justify-center gap-2 px-4 py-2.5 rounded-full text-xs sm:text-sm font-semibold text-white shadow-lg transition-all hover:scale-105 active:scale-95 disabled:opacity-50 disabled:pointer-events-none"
+                style={{ background: "hsl(280 70% 50%)" }}
+                title="The whole task is finished — can mark it off your calendar too"
+                aria-label="Mark task complete"
+              >
+                <CheckCircle2 className="w-4 h-4 shrink-0" />
+                {completedTasks.has(activeTask.id) ? "Task Complete" : markingCalendarEvent ? "Updating calendar…" : "Mark Task Complete"}
+              </button>
               </>
             ) : (
               <div className="flex flex-col gap-3">
@@ -1433,14 +1377,19 @@ const WizardInterface = ({ settings, onSettingsChange, onComplete, isLoading, ge
                     Pomodoro Timer →
                   </button>
                 </div>
-                {[...generatedSchedule].sort((a, b) => a.time.localeCompare(b.time)).map((item, index) => (
+                {[...generatedSchedule].sort((a, b) => a.time.localeCompare(b.time)).map((item, index) => {
+                  const taskFinished = completedTasks.has(item.id);
+                  return (
                   <motion.button
                     key={item.id}
                     initial={{ opacity: 0, x: -20 }}
                     animate={{ opacity: 1, x: 0 }}
                     transition={{ delay: index * 0.08 }}
-                    onClick={() => startTask(item)}
-                    className="w-full text-left px-5 py-3 rounded-2xl cursor-pointer transition-all hover:scale-[1.02] active:scale-[0.98] shadow-md"
+                    onClick={() => !taskFinished && startTask(item)}
+                    disabled={taskFinished}
+                    className={`w-full text-left px-5 py-3 rounded-2xl transition-all shadow-md ${
+                      taskFinished ? "opacity-50 cursor-default" : "cursor-pointer hover:scale-[1.02] active:scale-[0.98]"
+                    }`}
                     style={{
                       background: item.title.toLowerCase().includes("break")
                         ? "hsl(150 50% 85%)"
@@ -1458,8 +1407,9 @@ const WizardInterface = ({ settings, onSettingsChange, onComplete, isLoading, ge
                           return `${h12}:${m} ${ampm}`;
                         })()}
                       </span>
-                      <span className="text-sm font-semibold" style={{ fontFamily: "var(--font-body)", color: "hsl(280 40% 25%)" }}>
+                      <span className={`text-sm font-semibold ${taskFinished ? "line-through" : ""}`} style={{ fontFamily: "var(--font-body)", color: "hsl(280 40% 25%)" }}>
                         {item.title}
+                        {taskFinished && " ✓"}
                       </span>
                     </div>
                     {item.description && (
@@ -1468,7 +1418,8 @@ const WizardInterface = ({ settings, onSettingsChange, onComplete, isLoading, ge
                       </p>
                     )}
                   </motion.button>
-                ))}
+                  );
+                })}
               </div>
             )}
           </div>
@@ -1705,19 +1656,6 @@ const WizardInterface = ({ settings, onSettingsChange, onComplete, isLoading, ge
         onImport={handleCalendarImport}
       />
 
-      {/* Next button — fixed bottom-right, library scene only, when no imported events */}
-      {scene === "library" && importedEvents.length === 0 && (
-        <button
-          onClick={() => handleCalendarImport([])}
-          className="fixed bottom-4 right-4 z-50 flex items-center justify-center gap-1 px-4 py-1.5 rounded-full text-xs font-semibold text-white shadow-lg transition-all hover:scale-105 active:scale-95"
-          style={{ background: "hsl(280 70% 50%)" }}
-          aria-label="Skip calendar import and continue"
-        >
-          <span>Next</span>
-          <ArrowRight className="w-3 h-3" />
-        </button>
-      )}
-
       {/* Skip button — fixed bottom-right, cozy scene only, square green, jumps to energy */}
       {scene === "cozy" && !requireJournal && (
         <button
@@ -1740,8 +1678,7 @@ const WizardInterface = ({ settings, onSettingsChange, onComplete, isLoading, ge
       {/* Back button — fixed top-left, navigates to previous scene */}
       {(() => {
         const prevMap: Record<Scene, Scene | null> = {
-          library: null,
-          cozy: "library",
+          cozy: null,
           energy: "cozy",
           stress: "energy",
           schedule: "stress",
@@ -1772,6 +1709,7 @@ const WizardInterface = ({ settings, onSettingsChange, onComplete, isLoading, ge
           </button>
         );
       })()}
+
     </div>
   );
 };

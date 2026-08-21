@@ -155,14 +155,169 @@ serve(async (req) => {
     let timeMax = '';
     let cacheOnly = false;
     let forceRefresh = false;
+    let body: Record<string, unknown> = {};
     try {
-      const body = await req.json();
-      if (body?.timezone) timezone = body.timezone;
+      body = await req.json();
+      if (body?.timezone) timezone = body.timezone as string;
       if (body?.cacheOnly) cacheOnly = true;
       if (body?.forceRefresh) forceRefresh = true;
-      if (body?.timeMin) timeMin = body.timeMin;
-      if (body?.timeMax) timeMax = body.timeMax;
+      if (body?.timeMin) timeMin = body.timeMin as string;
+      if (body?.timeMax) timeMax = body.timeMax as string;
     } catch {}
+
+    if (body?.action === 'removeEvent') {
+      const eventId = typeof body.eventId === 'string' ? body.eventId : '';
+      const calendarHint = typeof body.calendarHint === 'string' ? body.calendarHint : 'primary';
+      if (!eventId) {
+        return new Response(
+          JSON.stringify({ error: 'eventId is required' }),
+          { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
+        );
+      }
+
+      const { data: storedTokens } = await admin
+        .from('google_oauth_tokens')
+        .select('refresh_token, access_token, expires_at')
+        .eq('user_id', user.id)
+        .maybeSingle();
+
+      const refreshAndStoreProviderToken = async (): Promise<GoogleRefreshResult & { token?: string }> => {
+        if (!storedTokens?.refresh_token) {
+          return { error: 'No refresh token', code: 'missing_refresh_token', status: 401 };
+        }
+        const refreshed = await refreshGoogleToken(storedTokens.refresh_token);
+        if (isGoogleRefreshFailure(refreshed)) return refreshed;
+        await admin.from('google_oauth_tokens').upsert({
+          user_id: user.id,
+          access_token: refreshed.access_token,
+          expires_at: new Date(Date.now() + refreshed.expires_in * 1000).toISOString(),
+          refresh_token: storedTokens.refresh_token,
+        }, { onConflict: 'user_id' });
+        return { ...refreshed, token: refreshed.access_token };
+      };
+
+      let providerToken = '';
+      const headerProviderToken = req.headers.get('x-provider-token') || '';
+      const stored = storedTokens as StoredGoogleToken | null;
+      const storedFresh = !!(stored?.access_token && stored.expires_at &&
+        new Date(stored.expires_at).getTime() - Date.now() > 120_000);
+
+      if (storedFresh) {
+        providerToken = stored!.access_token!;
+      } else if (stored?.refresh_token) {
+        const refreshAttempt = await refreshAndStoreProviderToken();
+        providerToken = refreshAttempt.token || headerProviderToken;
+      } else {
+        providerToken = headerProviderToken;
+      }
+
+      if (!providerToken) {
+        return new Response(
+          JSON.stringify({ error: 'Google Calendar not connected', needsAuth: true, needsWriteScope: true }),
+          { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
+        );
+      }
+
+      const resolveCalendarId = async (token: string): Promise<string> => {
+        if (calendarHint.includes('@')) return calendarHint;
+        if (calendarHint !== 'primary' && calendarHint !== 'calendar') return calendarHint;
+        const listResp = await fetch('https://www.googleapis.com/calendar/v3/users/me/calendarList', {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (!listResp.ok) return 'primary';
+        const listData = await listResp.json();
+        const primary = (listData.items || []).find((cal: { primary?: boolean; id?: string }) => cal.primary);
+        return primary?.id || 'primary';
+      };
+
+      const calendarId = await resolveCalendarId(providerToken);
+      const deleteEvent = (token: string) =>
+        fetch(
+          `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(eventId)}`,
+          { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } },
+        );
+
+      let deleteResp = await deleteEvent(providerToken);
+      if (!deleteResp.ok && (deleteResp.status === 401 || deleteResp.status === 403)) {
+        const refreshAttempt = await refreshAndStoreProviderToken();
+        if (refreshAttempt.token) {
+          providerToken = refreshAttempt.token;
+          deleteResp = await deleteEvent(providerToken);
+        }
+      }
+
+      const cancelEvent = (token: string) =>
+        fetch(
+          `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(eventId)}`,
+          {
+            method: 'PATCH',
+            headers: {
+              Authorization: `Bearer ${token}`,
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ status: 'cancelled' }),
+          },
+        );
+
+      if (!deleteResp.ok && deleteResp.status !== 404) {
+        const cancelResp = await cancelEvent(providerToken);
+        if (cancelResp.ok) {
+          deleteResp = cancelResp;
+        }
+      }
+
+      if (deleteResp.status === 404) {
+        return new Response(
+          JSON.stringify({ success: true, calendarId, alreadyRemoved: true }),
+          { headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
+        );
+      }
+
+      if (!deleteResp.ok && deleteResp.status !== 404) {
+        const errText = await deleteResp.text();
+        const needsWriteScope =
+          deleteResp.status === 403 &&
+          /insufficient|scope|permission|forbidden/i.test(errText);
+        return new Response(
+          JSON.stringify({
+            error: needsWriteScope
+              ? 'Calendar write access is required. Re-sync calendar from Welcome Back to grant permission.'
+              : 'Failed to remove calendar event.',
+            needsWriteScope,
+            calendarId,
+            status: deleteResp.status,
+            details: errText.slice(0, 240),
+          }),
+          { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
+        );
+      }
+
+      try {
+        const cached = await admin
+          .from('cached_calendar_events')
+          .select('events')
+          .eq('user_id', user.id)
+          .maybeSingle();
+        const events = Array.isArray(cached?.events) ? cached.events : [];
+        const compositeSuffix = `-${calendarHint}`;
+        const filtered = events.filter((e: { id?: string }) => {
+          const id = e?.id || '';
+          return id !== `${eventId}${compositeSuffix}` && id !== eventId && !id.startsWith(`${eventId}-`);
+        });
+        await admin.from('cached_calendar_events').upsert({
+          user_id: user.id,
+          events: filtered,
+          fetched_at: new Date().toISOString(),
+        }, { onConflict: 'user_id' });
+      } catch (cacheErr) {
+        console.error('Failed to update calendar cache after delete:', cacheErr);
+      }
+
+      return new Response(
+        JSON.stringify({ success: true, calendarId }),
+        { headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
+      );
+    }
 
     // Fallback range: scan the next 31 days (full month horizon) so neurosymbolic
     // reasoning can plan lead time for important upcoming tasks.

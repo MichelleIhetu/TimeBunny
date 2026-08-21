@@ -18,6 +18,7 @@ export interface EventKitNativeBridge {
   getAuthorizationStatus(): Promise<NativeEventKitPermissionResult>;
   requestPermission(): Promise<NativeEventKitPermissionResult>;
   fetchEvents(request: NativeEventKitFetchRequest): Promise<NativeEventKitFetchResult>;
+  removeEvent?(request: { eventIdentifier: string }): Promise<{ success: boolean }>;
   /** Optional: native emits when EventKit store changes */
   subscribeToChanges?(callback: () => void): Promise<{ unsubscribe: () => void }>;
 }
@@ -99,6 +100,17 @@ export async function eventKitFetchEvents(
     endDateIso: range.timeMax,
   });
   return result.events ?? [];
+}
+
+export async function eventKitRemoveEvent(eventIdentifier: string): Promise<void> {
+  const bridge = resolveEventKitBridge();
+  if (!bridge?.removeEvent) {
+    throw new Error("Apple Calendar removal is not available on this device.");
+  }
+  const result = await bridge.removeEvent({ eventIdentifier });
+  if (!result?.success) {
+    throw new Error("Could not remove the event from Apple Calendar.");
+  }
 }
 
 export async function eventKitSubscribeToChanges(onChange: () => void): Promise<(() => void) | null> {

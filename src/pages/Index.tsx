@@ -25,7 +25,10 @@ import {
   loadScheduleSnapshot,
   hasSyncedCalendarToday,
 } from "@/hooks/useSchedulePersistence";
-import { useCalendarAutoSync } from "@/hooks/useCalendarAutoSync";
+import { SCHEDULE_UPDATE_REQUEST_EVENT } from "@/lib/scheduleUpdateNotice";
+import { CALENDAR_SYNCED_EVENT, CALENDAR_SYNC_NOW_EVENT } from "@/lib/calendarSync";
+import { setCalendarSyncPaused } from "@/lib/calendarSyncPause";
+import { notifyUrgentNewTasks } from "@/lib/urgentScheduleItems";
 import { UserSettings, DEFAULT_SCHEDULE_SUIT } from "@/types/schedule";
 import { Button } from "@/components/ui/button";
 import CalendarAnalysisModal, { AnalyzedTask } from "@/components/CalendarAnalysisModal";
@@ -120,13 +123,23 @@ const Index = () => {
     });
   }, [scheduleLoaded, loadTodaySchedule]);
 
-  useCalendarAutoSync({
-    enabled: !!user && !authLoading,
-    existingTasks: importedCalendarTasks,
-    onTasksUpdated: setImportedCalendarTasks,
-    saveCalendarImport,
-    paused: calendarAnalyzing,
-  });
+  useEffect(() => {
+    setCalendarSyncPaused(calendarAnalyzing);
+  }, [calendarAnalyzing]);
+
+  useEffect(() => {
+    if (viewMode !== "schedule" || !user) return;
+    window.dispatchEvent(new CustomEvent(CALENDAR_SYNC_NOW_EVENT));
+  }, [viewMode, user]);
+
+  useEffect(() => {
+    const onSynced = (event: Event) => {
+      const detail = (event as CustomEvent<{ tasks?: AnalyzedTask[] }>).detail;
+      if (detail?.tasks) setImportedCalendarTasks(detail.tasks);
+    };
+    window.addEventListener(CALENDAR_SYNCED_EVENT, onSynced);
+    return () => window.removeEventListener(CALENDAR_SYNCED_EVENT, onSynced);
+  }, []);
 
   // Save schedule whenever it changes
   useEffect(() => {
@@ -218,7 +231,7 @@ const Index = () => {
     window.history.replaceState({}, document.title);
   }, [location.state]);
 
-  // Skip flow from Auth page: jump directly to the wizard (library scene).
+  // Skip flow from Auth page: jump directly to the journal wizard (cozy scene).
   useEffect(() => {
     const state = location.state as any;
     const storedSkipNonce = sessionStorage.getItem(WIZARD_SKIP_REQUEST_KEY);
@@ -243,10 +256,19 @@ const Index = () => {
     window.history.replaceState({}, document.title);
   }, [location.state]);
 
-  // Open schedule view when navigated with openScheduleView (e.g. floating nav, old /pomodoro links).
+  useEffect(() => {
+    const onOpenSchedule = () => {
+      setViewMode("schedule");
+    };
+    window.addEventListener(SCHEDULE_UPDATE_REQUEST_EVENT, onOpenSchedule);
+    return () => window.removeEventListener(SCHEDULE_UPDATE_REQUEST_EVENT, onOpenSchedule);
+  }, []);
+
+  // Open schedule view (bunny in chair) — pomodoro nav, post-it, deep links.
   useEffect(() => {
     const state = location.state as any;
     if (state?.openScheduleView && !state?.vibeCheckResult) {
+      window.dispatchEvent(new CustomEvent(CALENDAR_SYNC_NOW_EVENT));
       // Prefer the most recent Google Calendar pull (today's events) so the
       // Pomodoro view reflects what's actually on the user's calendar now.
       (async () => {
@@ -383,6 +405,7 @@ const Index = () => {
         setAnalyzedTasks(analyzed);
         setImportedCalendarTasks(analyzed);
         if (analyzed.length > 0) {
+          notifyUrgentNewTasks(importedCalendarTasks, analyzed, "calendar");
           await saveCalendarImport(analyzed);
         }
         toast.success(`Analyzed ${analyzed.length} events from ${scopeLabel} ✨`);
@@ -848,10 +871,9 @@ const Index = () => {
         analyzedCalendarTasks={importedCalendarTasks}
         comfortMode={comfortMode}
         onComfortDismiss={() => setComfortMode(null)}
-        initialScene={viewMode === "schedule" ? "schedule" : "library"}
+        initialScene={viewMode === "schedule" ? "schedule" : "cozy"}
         onScheduleChange={(items) => setGeneratedSchedule(items)}
         onUpdateSchedule={() => {
-          setGeneratedSchedule([]);
           setViewMode("wizard");
         }}
       />

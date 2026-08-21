@@ -11,6 +11,7 @@ public class TimeBunnyCalendarPlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "getAuthorizationStatus", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "requestPermission", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "fetchEvents", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "removeEvent", returnType: CAPPluginReturnPromise),
     ]
 
     @objc func getAuthorizationStatus(_ call: CAPPluginCall) {
@@ -52,6 +53,20 @@ public class TimeBunnyCalendarPlugin: CAPPlugin, CAPBridgedPlugin {
         do {
             let events = try EventKitCalendarReader.fetchEvents(start: start, end: end)
             call.resolve(["events": events])
+        } catch {
+            call.reject(error.localizedDescription)
+        }
+    }
+
+    @objc func removeEvent(_ call: CAPPluginCall) {
+        guard let eventIdentifier = call.getString("eventIdentifier") else {
+            call.reject("eventIdentifier is required")
+            return
+        }
+
+        do {
+            try EventKitCalendarReader.removeEvent(eventIdentifier: eventIdentifier)
+            call.resolve(["success": true])
         } catch {
             call.reject(error.localizedDescription)
         }

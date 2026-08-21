@@ -15,6 +15,7 @@ import bunnyMascot from "@/assets/bunny-mascot.png";
 import type { AnalyzedTask } from "@/components/CalendarAnalysisModal";
 import type { CalendarEvent } from "@/lib/calendarSync";
 import { syncAllCalendarProviders } from "@/lib/calendarSync";
+import { notifyUrgentNewTasks } from "@/lib/urgentScheduleItems";
 import { fetchEventsFromProviders } from "@/lib/calendar";
 import type { GoalWithProgress } from "@/hooks/useGoals";
 import type { ScheduleItem } from "@/types/schedule";
@@ -186,6 +187,7 @@ const MonthlyCalendarModal = ({
       if (syncResult.tasks.length > 0 || syncResult.newCount > 0) {
         onCalendarTasksUpdated?.(syncResult.tasks);
         await saveCalendarImport?.(syncResult.tasks);
+        notifyUrgentNewTasks(calendarTasks, syncResult.tasks, "calendar", syncResult.newEvents ?? []);
       }
       setRawEvents(fetchResult.events);
 

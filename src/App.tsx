@@ -14,6 +14,8 @@ import VibeCheck from "./pages/VibeCheck";
 import CalendarSuccess from "./pages/CalendarSuccess";
 import NotFound from "./pages/NotFound";
 import AppNavigation from "./components/AppNavigation";
+import ScheduleUpdatePostIt from "./components/ScheduleUpdatePostIt";
+import GlobalCalendarSync from "./components/GlobalCalendarSync";
 import { LocalTimeProvider } from "@/hooks/useLocalTime";
 import { usePlatform } from "@/hooks/usePlatform";
 import { supabase } from "@/integrations/supabase/client";
@@ -68,7 +70,7 @@ const TokenCapture = () => {
             access_token: accessToken ?? null,
             expires_in: 3600,
             scope:
-              "https://www.googleapis.com/auth/calendar.readonly https://www.googleapis.com/auth/calendar.events.readonly",
+              "https://www.googleapis.com/auth/calendar.readonly https://www.googleapis.com/auth/calendar.events.readonly https://www.googleapis.com/auth/calendar.events",
           },
         });
       }
@@ -101,6 +103,8 @@ const App = () => (
         <MobileAppShell>
         <TokenCapture />
         <NativeDeepLinkRouter />
+        <GlobalCalendarSync />
+        <ScheduleUpdatePostIt />
         <Routes>
           <Route path="/" element={<Index />} />
           <Route path="/auth" element={<Auth />} />

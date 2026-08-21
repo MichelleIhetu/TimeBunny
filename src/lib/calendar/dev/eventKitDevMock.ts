@@ -60,6 +60,11 @@ export function installEventKitDevMock(): void {
       const id = window.setInterval(callback, 60_000);
       return { unsubscribe: () => window.clearInterval(id) };
     },
+    async removeEvent({ eventIdentifier }) {
+      const idx = MOCK_EVENTS.findIndex((e) => e.eventIdentifier === eventIdentifier);
+      if (idx >= 0) MOCK_EVENTS.splice(idx, 1);
+      return { success: true };
+    },
   });
 
   console.info("[TimeBunny] EventKit dev mock installed. Disable: localStorage.removeItem('timebunny_mock_eventkit')");

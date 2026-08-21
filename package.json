@@ -12,7 +12,8 @@
     "preview": "vite preview",
     "mobile:sync": "npm run build:mobile && npx cap sync",
     "mobile:ios": "npm run mobile:sync && npx cap open ios",
-    "mobile:android": "npm run mobile:sync && npx cap open android"
+    "mobile:android": "npm run mobile:sync && npx cap open android",
+    "supabase:deploy-calendar": "npx supabase functions deploy google-calendar --project-ref jpaaruwchhouojnoegfc"
   },
   "dependencies": {
     "@capacitor/android": "^7.4.2",

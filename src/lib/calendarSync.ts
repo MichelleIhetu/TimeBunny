@@ -4,6 +4,7 @@ import type { NormalizedCalendarEvent } from "@/types/calendarProvider";
 import { localDateString } from "@/lib/localTime";
 
 export const CALENDAR_SYNCED_EVENT = "timebunny:calendar-synced";
+export const CALENDAR_SYNC_NOW_EVENT = "timebunny:calendar-sync-now";
 
 /** @deprecated Prefer NormalizedCalendarEvent from @/types/calendarProvider */
 export type CalendarEvent = NormalizedCalendarEvent;
@@ -13,6 +14,7 @@ export type CalendarSyncResult = {
   newCount: number;
   removedCount: number;
   totalEvents: number;
+  newEvents?: NormalizedCalendarEvent[];
   needsAuth?: boolean;
   error?: string;
 };
@@ -130,6 +132,7 @@ export async function syncCalendarWithGoogle(opts: {
     newCount,
     removedCount,
     totalEvents: events.length,
+    newEvents,
   };
 }
 

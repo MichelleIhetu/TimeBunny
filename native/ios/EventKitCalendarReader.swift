@@ -47,6 +47,17 @@ enum EventKitCalendarReader {
         }
     }
 
+    static func removeEvent(eventIdentifier: String) throws {
+        guard let event = store.event(withIdentifier: eventIdentifier) else {
+            throw NSError(
+                domain: "TimeBunnyEventKit",
+                code: 404,
+                userInfo: [NSLocalizedDescriptionKey: "Calendar event not found"]
+            )
+        }
+        try store.remove(event, span: .thisEvent, commit: true)
+    }
+
     private static func isoString(_ date: Date) -> String {
         ISO8601DateFormatter().string(from: date)
     }

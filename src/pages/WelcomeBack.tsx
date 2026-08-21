@@ -13,7 +13,10 @@ import { formatGoalsForSchedule } from "@/lib/goalsSchedule";
 import { useGoalScheduleSync } from "@/hooks/useGoalScheduleSync";
 import type { ScheduleGenerationContext } from "@/lib/scheduleOptimizationContext";
 import { hasSyncedCalendarToday, useSchedulePersistence } from "@/hooks/useSchedulePersistence";
-import { useCalendarAutoSync } from "@/hooks/useCalendarAutoSync";
+import { SCHEDULE_UPDATE_REQUEST_EVENT } from "@/lib/scheduleUpdateNotice";
+import { CALENDAR_SYNCED_EVENT } from "@/lib/calendarSync";
+import { setCalendarSyncPaused } from "@/lib/calendarSyncPause";
+import { notifyUrgentNewTasks } from "@/lib/urgentScheduleItems";
 import { UserSettings } from "@/types/schedule";
 import { supabase } from "@/integrations/supabase/client";
 import { connectGoogleCalendar } from "@/lib/googleCalendarAccess";
@@ -110,18 +113,30 @@ const WelcomeBack = () => {
     });
   }, [user, loadTodaySchedule]);
 
-  useCalendarAutoSync({
-    enabled: !!user && !authLoading,
-    existingTasks: importedCalendarTasks,
-    onTasksUpdated: (tasks) => {
-      setImportedCalendarTasks(tasks);
-      if (tasks.length > 0) setCalendarImported(true);
-    },
-    saveCalendarImport,
-    paused: calendarAnalyzing || view === "wizard",
-  });
+  useEffect(() => {
+    setCalendarSyncPaused(calendarAnalyzing);
+  }, [calendarAnalyzing]);
+
+  useEffect(() => {
+    const onSynced = (event: Event) => {
+      const detail = (event as CustomEvent<{ tasks?: AnalyzedTask[] }>).detail;
+      if (!detail?.tasks) return;
+      setImportedCalendarTasks(detail.tasks);
+      if (detail.tasks.length > 0) setCalendarImported(true);
+    };
+    window.addEventListener(CALENDAR_SYNCED_EVENT, onSynced);
+    return () => window.removeEventListener(CALENDAR_SYNCED_EVENT, onSynced);
+  }, []);
 
   useGoalScheduleSync(generatedSchedule, goals, settings, setGeneratedSchedule, generatedSchedule.length > 0);
+
+  useEffect(() => {
+    const onOpenSchedule = () => {
+      setView("schedule");
+    };
+    window.addEventListener(SCHEDULE_UPDATE_REQUEST_EVENT, onOpenSchedule);
+    return () => window.removeEventListener(SCHEDULE_UPDATE_REQUEST_EVENT, onOpenSchedule);
+  }, []);
 
   useEffect(() => {
     viewRef.current = view;
@@ -276,6 +291,7 @@ const WelcomeBack = () => {
         setImportedCalendarTasks(analyzed);
         setCalendarImported(true);
         if (analyzed.length > 0) {
+          notifyUrgentNewTasks(importedCalendarTasks, analyzed, "calendar");
           await saveCalendarImport(analyzed);
         }
         toast.success(`Analyzed ${analyzed.length} events ✨`);
@@ -642,8 +658,8 @@ const WelcomeBack = () => {
         </button>
 
         {calendarImported && (
-          <p className="mt-4 text-sm font-body" style={{ color: "hsl(140 50% 35%)" }}>
-            ✓ Calendar synced — tap Next to continue
+          <p className="mt-4 text-sm font-body max-w-md text-center" style={{ color: "hsl(140 50% 35%)" }}>
+            ✓ Calendar synced — TimeBunny checks for new events automatically while you use the app
           </p>
         )}
 
