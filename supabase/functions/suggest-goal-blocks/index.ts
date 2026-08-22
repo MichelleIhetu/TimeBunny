@@ -24,15 +24,18 @@ Rules:
 - Suggest realistic block sizes (minimum 15 min, prefer 25-50 min for focus work)
 - Apply Atomic Habits principles: start small, habit stack (place goal blocks after existing habits)
 - Consider goal category for optimal timing (fitness=morning, creative=evening, learning=afternoon)
+- Prioritize IMPORTANT goals and goals with finish-by dates that are soon; schedule those before minor goals with distant deadlines
 - For each suggestion, explain WHY that time slot works (e.g., "after lunch energy dip is good for light exercise")
 - Maximum 4 suggestions per call
 - Distribute suggestions across different goals if multiple are active
 
 You MUST respond using the suggest_blocks tool.`;
 
-    const goalsDesc = goals.map((g: any) =>
-      `- "${g.title}" (${g.category}, ${g.target_hours}h target, ${g.totalLogged.toFixed(1)}h done, ${g.goal_type})`
-    ).join("\n");
+    const goalsDesc = goals.map((g: any) => {
+      const urgency = g.urgency === "important" ? "important" : "minor";
+      const deadline = g.end_date ? `, finish by ${String(g.end_date).slice(0, 10)}` : "";
+      return `- "${g.title}" (${g.category}, ${g.target_hours}h target, ${g.totalLogged.toFixed(1)}h done, ${g.goal_type}, ${urgency}${deadline})`;
+    }).join("\n");
 
     const scheduleDesc = schedule.length > 0
       ? schedule.map((s: any) => `- ${s.time}: ${s.title}`).join("\n")

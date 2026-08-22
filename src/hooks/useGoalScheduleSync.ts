@@ -25,7 +25,13 @@ export function useGoalScheduleSync(
 
     const formatted = formatGoalsForSchedule(goals);
     const cleaned = removeCompletedGoalBlocks(schedule, goals);
-    const merged = fillGoalGapsInSchedule(cleaned, formatted, settings);
+    let merged: ScheduleItem[];
+    try {
+      merged = fillGoalGapsInSchedule(cleaned, formatted, settings);
+    } catch (err) {
+      console.error("Goal schedule sync failed:", err);
+      return;
+    }
     if (schedulesEquivalent(merged, schedule)) return;
 
     syncingRef.current = true;

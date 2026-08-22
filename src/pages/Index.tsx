@@ -231,7 +231,7 @@ const Index = () => {
     window.history.replaceState({}, document.title);
   }, [location.state]);
 
-  // Skip flow from Auth page: jump directly to the journal wizard (cozy scene).
+  // Skip flow from Auth page: jump directly to the wizard (library scene).
   useEffect(() => {
     const state = location.state as any;
     const storedSkipNonce = sessionStorage.getItem(WIZARD_SKIP_REQUEST_KEY);
@@ -831,6 +831,7 @@ const Index = () => {
         <LandingBunnySpeech
           comfortMode={comfortMode}
           autoShow={comfortMode === "critical_only"}
+          placement="flush-right"
         />
 
         <CalendarAnalysisModal
@@ -871,7 +872,7 @@ const Index = () => {
         analyzedCalendarTasks={importedCalendarTasks}
         comfortMode={comfortMode}
         onComfortDismiss={() => setComfortMode(null)}
-        initialScene={viewMode === "schedule" ? "schedule" : "cozy"}
+        initialScene={viewMode === "schedule" ? "schedule" : "library"}
         onScheduleChange={(items) => setGeneratedSchedule(items)}
         onUpdateSchedule={() => {
           setViewMode("wizard");

@@ -37,9 +37,11 @@ import {
   loadCelebratedGoalIds,
   saveCelebratedGoalIds,
 } from "@/lib/goalCarrots";
-import { endOfMonthDateString, localMonthString } from "@/lib/localTime";
+import { endOfMonthDateString, localDateString, localMonthString } from "@/lib/localTime";
+import { type GoalUrgency, normalizeGoalUrgency } from "@/lib/goalUrgency";
 import { UserSettings } from "@/types/schedule";
 import GoalCarrotCelebration from "@/components/GoalCarrotCelebration";
+import { toast } from "sonner";
 
 const defaultScheduleSettings: UserSettings = {
   energyLevel: "motivated",
@@ -50,6 +52,14 @@ const defaultScheduleSettings: UserSettings = {
 
 const PIXEL: React.CSSProperties = { fontFamily: "'Press Start 2P', cursive" };
 const VT: React.CSSProperties = { fontFamily: "'VT323', monospace" };
+
+/** Purple / white field styling — matches goal cards & dialog */
+const GOAL_FIELD_CLASS =
+  "h-9 bg-white border-2 border-[#ddd6fe] text-[#5b21b6] text-lg shadow-none rounded-none focus-visible:ring-1 focus-visible:ring-[#5b21b6] focus-visible:ring-offset-0 focus-visible:border-[#5b21b6] [color-scheme:light]";
+const GOAL_SELECT_TRIGGER_CLASS = `${GOAL_FIELD_CLASS} px-3 [&_svg]:text-[#a78bfa]`;
+const GOAL_SELECT_CONTENT_CLASS = "bg-white border-2 border-[#ddd6fe] text-[#5b21b6] rounded-none z-[80]";
+const GOAL_SELECT_ITEM_CLASS = "text-lg text-[#5b21b6] focus:bg-purple-50 focus:text-[#5b21b6] rounded-none cursor-pointer";
+const GOAL_META_PANEL_CLASS = "p-3 bg-purple-50/90 border-2 border-[#ddd6fe]";
 
 const CATEGORIES = [
   { value: "fitness", label: "🏋️ Fitness", tip: "Start with just 2 mins — make it obvious & easy" },
@@ -69,19 +79,29 @@ function GoalCard({
   goal,
   onLog,
   onArchive,
+  onUpdateDeadline,
+  onUpdateUrgency,
 }: {
   goal: GoalWithProgress;
   onLog: (id: string, amount: number, notes?: string) => void;
   onArchive: (id: string) => void;
+  onUpdateDeadline: (id: string, endDate: string | null) => void;
+  onUpdateUrgency: (id: string, urgency: GoalUrgency) => void;
 }) {
   const unit = normalizeGoalUnit(goal.target_unit);
   const [logAmount, setLogAmount] = useState(() => (unit === "hours" ? "0.5" : unit === "minutes" ? "30" : "10"));
   const [logNotes, setLogNotes] = useState("");
   const [showLog, setShowLog] = useState(false);
+  const [deadlineDraft, setDeadlineDraft] = useState(goal.end_date?.slice(0, 10) ?? "");
+
+  useEffect(() => {
+    setDeadlineDraft(goal.end_date?.slice(0, 10) ?? "");
+  }, [goal.end_date]);
 
   const progress = progressPercent(goal.totalLogged, goal.target_hours);
   const categoryInfo = CATEGORIES.find((c) => c.value === goal.category);
   const emoji = categoryInfo?.label.split(" ")[0] ?? "⭐";
+  const urgency = normalizeGoalUrgency(goal.urgency);
 
   const handleLog = () => {
     onLog(goal.id, parseFloat(logAmount) || 0, logNotes || undefined);
@@ -116,6 +136,47 @@ function GoalCard({
 
       <div className="w-full h-4 bg-purple-100 border border-purple-200 p-0.5">
         <div className="h-full bg-[#2dd4bf] transition-all" style={{ width: `${progress}%` }} />
+      </div>
+
+      <div className={`mt-2 grid grid-cols-1 sm:grid-cols-2 gap-3 ${GOAL_META_PANEL_CLASS}`}>
+        <div>
+          <Label className="text-[#5b21b6] text-[9px] mb-1 block" style={PIXEL}>
+            URGENCY
+          </Label>
+          <Select
+            value={urgency}
+            onValueChange={(v) => onUpdateUrgency(goal.id, v as GoalUrgency)}
+          >
+            <SelectTrigger className={GOAL_SELECT_TRIGGER_CLASS} style={VT}>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent className={GOAL_SELECT_CONTENT_CLASS}>
+              <SelectItem value="minor" className={GOAL_SELECT_ITEM_CLASS} style={VT}>
+                Minor
+              </SelectItem>
+              <SelectItem value="important" className={GOAL_SELECT_ITEM_CLASS} style={VT}>
+                Important
+              </SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+        <div>
+          <Label className="text-[#5b21b6] text-[9px] mb-1 block" style={PIXEL}>
+            FINISH BY
+          </Label>
+          <Input
+            type="date"
+            value={deadlineDraft}
+            onChange={(e) => setDeadlineDraft(e.target.value)}
+            onBlur={() => {
+              const next = deadlineDraft.trim().slice(0, 10) || null;
+              const current = goal.end_date?.slice(0, 10) ?? null;
+              if (next !== current) onUpdateDeadline(goal.id, next);
+            }}
+            className={`${GOAL_FIELD_CLASS} [&::-webkit-calendar-picker-indicator]:opacity-50 [&::-webkit-calendar-picker-indicator]:sepia [&::-webkit-calendar-picker-indicator]:saturate-[3]`}
+            style={VT}
+          />
+        </div>
       </div>
 
       <div className="mt-3 flex items-center justify-between gap-2">
@@ -201,6 +262,8 @@ function AddGoalDialog({ onAdd, trigger }: { onAdd: (g: any) => void; trigger: R
   const [targetUnit, setTargetUnit] = useState<GoalTargetUnit>("hours");
   const [targetAmount, setTargetAmount] = useState("10");
   const [category, setCategory] = useState("general");
+  const [deadlineDate, setDeadlineDate] = useState(() => endOfMonthDateString());
+  const [urgency, setUrgency] = useState<GoalUrgency>("minor");
 
   const handleCategoryChange = (value: string) => {
     setCategory(value);
@@ -220,13 +283,19 @@ function AddGoalDialog({ onAdd, trigger }: { onAdd: (g: any) => void; trigger: R
     if (isBookCompletionUnit(value)) setGoalType("ongoing");
   };
 
+  const handleGoalTypeChange = (value: "monthly" | "ongoing") => {
+    setGoalType(value);
+    setDeadlineDate(value === "monthly" ? endOfMonthDateString() : "");
+  };
+
   const bookCompletion = isBookCompletionUnit(targetUnit);
 
   const handleSubmit = () => {
     if (!title.trim()) return;
     const resolvedType = bookCompletion ? "ongoing" : goalType;
-    const endDate =
-      resolvedType === "monthly"
+    const endDate = deadlineDate.trim()
+      ? deadlineDate.trim().slice(0, 10)
+      : resolvedType === "monthly"
         ? endOfMonthDateString()
         : undefined;
     onAdd({
@@ -237,19 +306,23 @@ function AddGoalDialog({ onAdd, trigger }: { onAdd: (g: any) => void; trigger: R
       target_unit: targetUnit,
       category,
       end_date: endDate,
+      urgency,
     });
     setTitle("");
     setDescription("");
     setTargetUnit("hours");
     setTargetAmount("10");
     setCategory("general");
+    setGoalType("monthly");
+    setDeadlineDate(endOfMonthDateString());
+    setUrgency("minor");
     setOpen(false);
   };
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogTrigger asChild>{trigger}</DialogTrigger>
-      <DialogContent className="sm:max-w-md bg-white border-2 border-[#ddd6fe]">
+      <DialogContent className="sm:max-w-md max-h-[90vh] overflow-y-auto bg-white border-2 border-[#ddd6fe]">
         <DialogHeader>
           <DialogTitle className="text-[#5b21b6] text-sm" style={PIXEL}>PLANT A NEW GOAL</DialogTitle>
         </DialogHeader>
@@ -277,7 +350,7 @@ function AddGoalDialog({ onAdd, trigger }: { onAdd: (g: any) => void; trigger: R
             {!bookCompletion && (
               <div>
                 <Label className="text-[#5b21b6] text-[10px]" style={PIXEL}>TYPE</Label>
-                <Select value={goalType} onValueChange={(v) => setGoalType(v as "monthly" | "ongoing")}>
+                <Select value={goalType} onValueChange={(v) => handleGoalTypeChange(v as "monthly" | "ongoing")}>
                   <SelectTrigger className="border-[#ddd6fe]"><SelectValue /></SelectTrigger>
                   <SelectContent>
                     <SelectItem value="monthly">Monthly</SelectItem>
@@ -286,6 +359,44 @@ function AddGoalDialog({ onAdd, trigger }: { onAdd: (g: any) => void; trigger: R
                 </Select>
               </div>
             )}
+          </div>
+
+          {/* Finish-by date — always visible when planting a goal */}
+          <div className={`space-y-2 ${GOAL_META_PANEL_CLASS}`}>
+            <Label className="text-[#5b21b6] text-[10px]" style={PIXEL}>
+              FINISH BY {goalType === "ongoing" || bookCompletion ? "(OPTIONAL)" : ""}
+            </Label>
+            <Input
+              type="date"
+              value={deadlineDate}
+              min={localDateString()}
+              onChange={(e) => setDeadlineDate(e.target.value)}
+              className={`${GOAL_FIELD_CLASS} [&::-webkit-calendar-picker-indicator]:opacity-50 [&::-webkit-calendar-picker-indicator]:sepia [&::-webkit-calendar-picker-indicator]:saturate-[3]`}
+              style={VT}
+            />
+            <p className="text-xs text-[#a78bfa]" style={VT}>
+              Pick the date you want this goal done by. Monthly goals default to month-end if left blank.
+            </p>
+          </div>
+
+          <div className={`space-y-2 ${GOAL_META_PANEL_CLASS}`}>
+            <Label className="text-[#5b21b6] text-[10px]" style={PIXEL}>URGENCY</Label>
+            <Select value={urgency} onValueChange={(v) => setUrgency(v as GoalUrgency)}>
+              <SelectTrigger className={GOAL_SELECT_TRIGGER_CLASS} style={VT}>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent className={GOAL_SELECT_CONTENT_CLASS}>
+                <SelectItem value="minor" className={GOAL_SELECT_ITEM_CLASS} style={VT}>
+                  Minor
+                </SelectItem>
+                <SelectItem value="important" className={GOAL_SELECT_ITEM_CLASS} style={VT}>
+                  Important
+                </SelectItem>
+              </SelectContent>
+            </Select>
+            <p className="text-xs text-[#a78bfa]" style={VT}>
+              Important goals get scheduled sooner as the finish-by date approaches.
+            </p>
           </div>
           {isReadingCategory(category) && (
             <div>
@@ -433,7 +544,7 @@ function StatTile({ label, value, color = "#5b21b6" }: { label: string; value: s
 
 export default function Goals() {
   const { user } = useAuth();
-  const { goals, loading, addGoal, logProgress, archiveGoal } = useGoals();
+  const { goals, loading, addGoal, logProgress, archiveGoal, updateGoalDeadline, updateGoalUrgency } = useGoals();
   const { loadTodaySchedule, saveSchedule } = useSchedulePersistence(user?.id);
   const [suggestions, setSuggestions] = useState<GoalSuggestion[]>([]);
   const [loadingSuggestions, setLoadingSuggestions] = useState(false);
@@ -509,6 +620,8 @@ export default function Goals() {
             target_unit: g.target_unit,
             totalLogged: g.totalLogged,
             goal_type: g.goal_type,
+            end_date: g.end_date,
+            urgency: g.urgency,
           })),
           wakeTime: settings?.wakeTime || "07:00",
           bedTime: settings?.bedTime || "23:00",
@@ -670,7 +783,14 @@ export default function Goals() {
         ) : (
           <div className="space-y-4">
             {goals.map((goal) => (
-              <GoalCard key={goal.id} goal={goal} onLog={logProgress} onArchive={archiveGoal} />
+              <GoalCard
+                key={goal.id}
+                goal={goal}
+                onLog={logProgress}
+                onArchive={archiveGoal}
+                onUpdateDeadline={updateGoalDeadline}
+                onUpdateUrgency={updateGoalUrgency}
+              />
             ))}
           </div>
         )}

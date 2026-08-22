@@ -569,6 +569,7 @@ const WelcomeBack = () => {
 
   // ─── LANDING (returning user) ───
   return (
+    <>
     <div className="min-h-screen relative overflow-hidden" style={{ background: "hsl(300 50% 88%)" }}>
       <SEO
         title="Welcome Back — TimeBunny"
@@ -663,17 +664,18 @@ const WelcomeBack = () => {
           </p>
         )}
 
-        {!calendarImported && (
+        {!calendarImported && !calendarAnalyzing && (
           <button
             onClick={() => {
               setCalendarAnalyzing(false);
               goToWizard();
             }}
-            className="fixed bottom-4 right-4 z-50 flex items-center justify-center w-12 h-12 rounded-md text-xs font-semibold text-white shadow-lg transition-all hover:scale-105 active:scale-95"
-            style={{ background: "hsl(140 60% 45%)" }}
-            aria-label="Skip calendar and continue"
+            className="fixed bottom-4 right-4 z-50 flex items-center justify-center gap-1 px-4 py-1.5 rounded-full text-xs font-semibold text-white shadow-lg transition-all hover:scale-105 active:scale-95"
+            style={{ background: "hsl(280 70% 50%)" }}
+            aria-label="Continue without syncing calendar"
           >
-            Skip
+            <span>Next</span>
+            <ArrowRight className="w-3 h-3" />
           </button>
         )}
 
@@ -709,14 +711,12 @@ const WelcomeBack = () => {
         </div>
       )}
 
-      <LandingBunnySpeech
-        className="fixed bottom-0 left-[-8%] sm:left-0 z-[55]"
-        imageClassName="w-64 sm:w-80 md:w-96 object-contain drop-shadow-xl transition-transform duration-200 hover:scale-105 active:scale-95 pixel-img"
-        bubbleClassName="absolute -top-4 left-[45%] sm:left-[50%] w-64 sm:w-72 md:w-80 z-20 pointer-events-none"
-      />
+    </div>
 
-      {/* Next button — fixed bottom-right, appears after calendar sync */}
-      {calendarImported && (
+      <LandingBunnySpeech placement="flush-right" />
+
+      {/* Next button — fixed bottom-right, after calendar sync or to continue without */}
+      {calendarImported && !calendarAnalyzing && (
         <button
           onClick={goToWizard}
           className="fixed bottom-4 right-4 z-50 flex items-center justify-center gap-1 px-4 py-1.5 rounded-full text-xs font-semibold text-white shadow-lg transition-all hover:scale-105 active:scale-95"
@@ -811,7 +811,7 @@ const WelcomeBack = () => {
           </div>
         </div>
       )}
-    </div>
+    </>
   );
 };
 

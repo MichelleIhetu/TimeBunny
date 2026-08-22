@@ -4,6 +4,7 @@ import { useAuth } from "@/hooks/useAuth";
 import { toast } from "sonner";
 import { localDateString } from "@/lib/localTime";
 import { isBookCompletionUnit, normalizeGoalUnit } from "@/lib/goalUnits";
+import { type GoalUrgency, normalizeGoalUrgency } from "@/lib/goalUrgency";
 import { isDueWithin24Hours, notifyUrgentTasksIfDue } from "@/lib/urgentScheduleItems";
 
 export interface Goal {
@@ -17,6 +18,7 @@ export interface Goal {
   category: string;
   start_date: string;
   end_date: string | null;
+  urgency: GoalUrgency;
   is_active: boolean;
   created_at: string;
   updated_at: string;
@@ -63,10 +65,35 @@ function calculateStreak(logs: GoalLog[]): number {
   return streak;
 }
 
+function isMissingUrgencyColumn(error: { message?: string; code?: string } | null): boolean {
+  if (!error) return false;
+  const msg = (error.message ?? "").toLowerCase();
+  return msg.includes("urgency") || error.code === "PGRST204";
+}
+
+async function insertGoalRow(payload: Record<string, unknown>) {
+  const insertPayload = {
+    ...payload,
+    urgency: normalizeGoalUrgency(payload.urgency as GoalUrgency | undefined),
+  };
+  let result = await supabase.from("goals").insert(insertPayload).select().single();
+  if (result.error && isMissingUrgencyColumn(result.error)) {
+    const { urgency: _u, ...withoutUrgency } = insertPayload;
+    result = await supabase.from("goals").insert(withoutUrgency).select().single();
+  }
+  return result;
+}
+
 function toGoalWithProgress(g: Goal, allLogs: GoalLog[]): GoalWithProgress {
   const goalLogs = allLogs.filter((l) => l.goal_id === g.id);
   const totalLogged = goalLogs.reduce((sum, l) => sum + Number(l.hours_logged), 0);
-  return { ...g, totalLogged, streak: calculateStreak(goalLogs), logs: goalLogs };
+  return {
+    ...g,
+    urgency: normalizeGoalUrgency((g as Goal & { urgency?: string }).urgency),
+    totalLogged,
+    streak: calculateStreak(goalLogs),
+    logs: goalLogs,
+  };
 }
 
 export function useGoals() {
@@ -138,6 +165,7 @@ export function useGoals() {
     target_unit?: string;
     category: string;
     end_date?: string;
+    urgency?: GoalUrgency;
   }) => {
     if (!user) {
       toast.error("Please sign in to save goals");
@@ -145,20 +173,17 @@ export function useGoals() {
     }
     const unit = goal.target_unit || "hours";
     const bookCompletion = isBookCompletionUnit(unit);
-    const { data, error } = await supabase
-      .from("goals")
-      .insert({
-        user_id: user.id,
-        title: goal.title,
-        description: goal.description || null,
-        goal_type: bookCompletion ? "ongoing" : goal.goal_type,
-        target_hours: goal.target_hours,
-        target_unit: unit,
-        category: goal.category,
-        end_date: bookCompletion ? null : goal.end_date || null,
-      })
-      .select()
-      .single();
+    const { data, error } = await insertGoalRow({
+      user_id: user.id,
+      title: goal.title,
+      description: goal.description || null,
+      goal_type: bookCompletion ? "ongoing" : goal.goal_type,
+      target_hours: goal.target_hours,
+      target_unit: unit,
+      category: goal.category,
+      end_date: goal.end_date || null,
+      urgency: goal.urgency,
+    });
     if (error) {
       console.error("Failed to create goal:", error);
       toast.error(`Failed to create goal: ${error.message}`);
@@ -253,6 +278,72 @@ export function useGoals() {
     void fetchGoals({ silent: true });
   };
 
+  const updateGoalUrgency = async (goalId: string, urgency: GoalUrgency) => {
+    if (!user) return;
+
+    const normalized = normalizeGoalUrgency(urgency);
+    const previous = goals;
+    setGoals((prev) => {
+      const next = prev.map((g) => (g.id === goalId ? { ...g, urgency: normalized } : g));
+      persistGoals(next);
+      return next;
+    });
+
+    const { error } = await supabase
+      .from("goals")
+      .update({ urgency: normalized })
+      .eq("id", goalId)
+      .eq("user_id", user.id);
+
+    if (error && isMissingUrgencyColumn(error)) {
+      void fetchGoals({ silent: true });
+      return;
+    }
+
+    if (error) {
+      setGoals(previous);
+      persistGoals(previous);
+      toast.error("Failed to update urgency");
+      return;
+    }
+    void fetchGoals({ silent: true });
+  };
+
+  const updateGoalDeadline = async (goalId: string, endDate: string | null) => {
+    if (!user) return;
+
+    const normalized = endDate?.trim().slice(0, 10) || null;
+    const previous = goals;
+    setGoals((prev) => {
+      const next = prev.map((g) => (g.id === goalId ? { ...g, end_date: normalized } : g));
+      persistGoals(next);
+      return next;
+    });
+
+    const { error } = await supabase
+      .from("goals")
+      .update({ end_date: normalized })
+      .eq("id", goalId)
+      .eq("user_id", user.id);
+
+    if (error) {
+      setGoals(previous);
+      persistGoals(previous);
+      toast.error("Failed to update deadline");
+      return;
+    }
+
+    toast.success(normalized ? "Deadline saved" : "Deadline removed");
+    if (normalized && isDueWithin24Hours(normalized)) {
+      const goal = goals.find((g) => g.id === goalId);
+      notifyUrgentTasksIfDue(
+        [{ id: goalId, title: goal?.title ?? "Goal", date: normalized, startTime: null }],
+        "manual",
+      );
+    }
+    void fetchGoals({ silent: true });
+  };
+
   const archiveGoal = async (goalId: string) => {
     if (!user) return;
     const previous = goals;
@@ -277,5 +368,5 @@ export function useGoals() {
     void fetchGoals({ silent: true });
   };
 
-  return { goals, loading, addGoal, logProgress, addGoalProgress, archiveGoal, refetch: fetchGoals };
+  return { goals, loading, addGoal, logProgress, addGoalProgress, archiveGoal, updateGoalDeadline, updateGoalUrgency, refetch: fetchGoals };
 }

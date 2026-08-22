@@ -84,6 +84,7 @@ export type Database = {
           target_unit: string
           title: string
           updated_at: string
+          urgency: string
           user_id: string
         }
         Insert: {
@@ -99,6 +100,7 @@ export type Database = {
           target_unit?: string
           title: string
           updated_at?: string
+          urgency?: string
           user_id: string
         }
         Update: {
@@ -114,6 +116,7 @@ export type Database = {
           target_unit?: string
           title?: string
           updated_at?: string
+          urgency?: string
           user_id?: string
         }
         Relationships: []

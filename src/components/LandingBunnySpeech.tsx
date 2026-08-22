@@ -1,24 +1,33 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import bunnyMascot from "@/assets/bunny-mascot.png";
 import { getLandingBunnyMessages } from "@/lib/vibeStressDetection";
+import { usePlatform } from "@/hooks/usePlatform";
+import { cn } from "@/lib/utils";
 
 type Props = {
   comfortMode?: "critical_only" | null;
   /** Auto-show first message on mount (e.g. critical-only comfort). */
   autoShow?: boolean;
+  /** default = soft bottom-right; flush-right = tucked to the right edge, clears mobile tab bar */
+  placement?: "default" | "flush-right";
   className?: string;
   imageClassName?: string;
   bubbleClassName?: string;
 };
 
+const FLUSH_RIGHT_BUBBLE =
+  "absolute -top-4 right-[62%] sm:right-[68%] w-64 sm:w-72 md:w-80 z-20 pointer-events-none";
+
 export default function LandingBunnySpeech({
   comfortMode = null,
   autoShow = false,
+  placement = "default",
   className = "fixed bottom-4 right-0 sm:right-4 z-50",
   imageClassName = "w-72 sm:w-96 md:w-[28rem] object-contain drop-shadow-xl transition-transform duration-200 hover:scale-105 active:scale-95 pixel-img",
   bubbleClassName = "absolute -top-4 right-[55%] sm:right-[58%] w-64 sm:w-72 md:w-80 z-20 pointer-events-none",
 }: Props) {
+  const { useMobileChrome } = usePlatform();
   const [showSpeechBubble, setShowSpeechBubble] = useState(false);
   const [typedText, setTypedText] = useState("");
   const [isTyping, setIsTyping] = useState(false);
@@ -91,13 +100,34 @@ export default function LandingBunnySpeech({
     [],
   );
 
+  const flushRightStyle: CSSProperties =
+    placement === "flush-right"
+      ? {
+          position: "fixed",
+          right: 0,
+          bottom: useMobileChrome
+            ? "calc(4.5rem + env(safe-area-inset-bottom, 0px))"
+            : 0,
+          zIndex: 40,
+          transform: "translateX(14%)",
+          pointerEvents: "none",
+        }
+      : {};
+
+  const resolvedBubbleClass =
+    placement === "flush-right" ? FLUSH_RIGHT_BUBBLE : bubbleClassName;
+
   return (
-    <div className={className}>
+    <div
+      className={cn(placement === "flush-right" ? undefined : className, placement === "flush-right" && "[&_button]:pointer-events-auto")}
+      style={flushRightStyle}
+    >
       <button
         type="button"
         aria-label="Talk to TimeBunny"
         className="relative cursor-pointer bg-transparent border-0 p-0"
         onClick={handleClick}
+        style={placement === "flush-right" ? { pointerEvents: "auto" } : undefined}
       >
         <AnimatePresence>
           {showSpeechBubble && (
@@ -105,7 +135,7 @@ export default function LandingBunnySpeech({
               initial={{ opacity: 0, scale: 0.8, y: 10 }}
               animate={{ opacity: 1, scale: 1, y: 0 }}
               exit={{ opacity: 0, scale: 0.8, y: 10 }}
-              className={bubbleClassName}
+              className={resolvedBubbleClass}
             >
               <div
                 className="relative bg-white p-5 shadow-xl"

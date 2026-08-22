@@ -32,6 +32,7 @@ import { resolveCalendarEventForScheduleItem } from "@/lib/calendar/scheduleCale
 import { loadJournalSpeechBubblePosition } from "@/lib/journalSpeechBubblePosition";
 import { supabase } from "@/integrations/supabase/client";
 import PomodoroBunnyCompanion from "@/components/PomodoroBunnyCompanion";
+import libraryBg from "@/assets/library-background.png";
 import cozyBg from "@/assets/cozy-background.png";
 import scheduleBg from "@/assets/schedule-background.png";
 import bunnyMascot from "@/assets/bunny-mascot.png";
@@ -67,7 +68,7 @@ interface WizardInterfaceProps {
 
 // ─── SCENE DEFINITIONS ───
 // Each scene has: background image, bunny position, bunny size, dialogue messages
-type Scene = "cozy" | "energy" | "stress" | "schedule";
+type Scene = "library" | "cozy" | "energy" | "stress" | "schedule";
 
 /** Journal / energy / stress — +2 paces up & right, midsize scale on chair */
 const WIREframe_CHAIR_BUNNY = {
@@ -105,6 +106,18 @@ const ENERGY_STRESS_SPEECH_BUBBLE_CLASS =
   "absolute z-50 pointer-events-none w-56 sm:w-64 right-[calc(100%-1.65rem)] sm:right-[calc(100%-1.5rem)] -top-[48%] sm:-top-[52%] -translate-y-36";
 
 const SCENE_CONFIG = {
+  library: {
+    background: libraryBg,
+    bunnyPosition: "bottom-[0%] right-[-1%]",
+    bunnySize: "w-[22rem]",
+    backgroundClass: "object-cover object-center",
+    hideBubble: false,
+    messages: [
+      `${getTimeOfDayGreeting()}! It's ${getFormattedDate()} 🗓️`,
+      "Hi there, my name is TimeBunny! Welcome to my home!",
+      "Tap Next when you're ready and we'll continue to your journal.",
+    ],
+  },
   cozy: {
     background: cozyBg,
     bunnyPosition: COZY_CHAIR_BUNNY.position,
@@ -154,7 +167,7 @@ const SCENE_CONFIG = {
 
 type WizardStep = "greeting" | "mood" | "stress" | "sleep" | "breaks" | "tasks";
 
-const WizardInterface = ({ settings, onSettingsChange, onComplete, isLoading, generatedSchedule, initialScene = "cozy", onBackFromInitial, onUpdateSchedule, onScheduleChange, analyzedCalendarTasks = [], requireJournal = false, comfortMode = null, onComfortDismiss }: WizardInterfaceProps) => {
+const WizardInterface = ({ settings, onSettingsChange, onComplete, isLoading, generatedSchedule, initialScene = "library", onBackFromInitial, onUpdateSchedule, onScheduleChange, analyzedCalendarTasks = [], requireJournal = false, comfortMode = null, onComfortDismiss }: WizardInterfaceProps) => {
   const navigate = useNavigate();
   const { user } = useAuth();
   const { goals, addGoalProgress } = useGoals();
@@ -166,9 +179,6 @@ const WizardInterface = ({ settings, onSettingsChange, onComplete, isLoading, ge
 
   useEffect(() => {
     setScene(initialScene);
-    if (initialScene === "cozy") {
-      setStep("tasks");
-    }
   }, [initialScene]);
 
   const [breakFrequency, setBreakFrequency] = useState<"minimal" | "moderate" | "frequent">("moderate");
@@ -1656,7 +1666,20 @@ const WizardInterface = ({ settings, onSettingsChange, onComplete, isLoading, ge
         onImport={handleCalendarImport}
       />
 
-      {/* Skip button — fixed bottom-right, cozy scene only, square green, jumps to energy */}
+      {/* Next button — library welcome scene */}
+      {scene === "library" && importedEvents.length === 0 && (
+        <button
+          onClick={() => handleCalendarImport([])}
+          className="fixed bottom-4 right-4 z-50 flex items-center justify-center gap-1 px-4 py-1.5 rounded-full text-xs font-semibold text-white shadow-lg transition-all hover:scale-105 active:scale-95"
+          style={{ background: "hsl(280 70% 50%)" }}
+          aria-label="Continue to journal"
+        >
+          <span>Next</span>
+          <ArrowRight className="w-3 h-3" />
+        </button>
+      )}
+
+      {/* Skip button — cozy scene only, jumps to energy */}
       {scene === "cozy" && !requireJournal && (
         <button
           onClick={() => {
@@ -1678,7 +1701,8 @@ const WizardInterface = ({ settings, onSettingsChange, onComplete, isLoading, ge
       {/* Back button — fixed top-left, navigates to previous scene */}
       {(() => {
         const prevMap: Record<Scene, Scene | null> = {
-          cozy: null,
+          library: null,
+          cozy: "library",
           energy: "cozy",
           stress: "energy",
           schedule: "stress",

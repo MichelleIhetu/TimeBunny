@@ -1,5 +1,7 @@
 import type { GoalWithProgress } from "@/hooks/useGoals";
 import { isGoalComplete } from "@/lib/goalCarrots";
+import { localDateString, parseLocalDate } from "@/lib/localTime";
+import { goalSchedulePriority, normalizeGoalUrgency, type GoalUrgency } from "@/lib/goalUrgency";
 import {
   formatGoalProgress,
   goalProgressSubtitle,
@@ -20,6 +22,8 @@ export type GoalForSchedule = {
   remainingHours: number;
   suggestedDailyMinutes: number;
   streak: number;
+  end_date?: string | null;
+  urgency?: GoalUrgency;
 };
 
 export type GoalSuggestion = {
@@ -35,6 +39,14 @@ export type GoalSuggestion = {
 
 const categoryToSuit = (_category?: string): Suit => DEFAULT_SCHEDULE_SUIT;
 
+/** Days left until end_date (inclusive of today), minimum 1. */
+function daysLeftUntil(endDateStr: string): number {
+  const today = parseLocalDate(localDateString());
+  const end = parseLocalDate(endDateStr.slice(0, 10));
+  const diff = Math.round((end.getTime() - today.getTime()) / 86_400_000);
+  return Math.max(1, diff + 1);
+}
+
 export const formatGoalsForSchedule = (goals: GoalWithProgress[]): GoalForSchedule[] => {
   const now = new Date();
   const daysInMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
@@ -46,6 +58,11 @@ export const formatGoalsForSchedule = (goals: GoalWithProgress[]): GoalForSchedu
     const bookCompletion = isBookCompletionUnit(unit);
     const remainingHours = remainingHoursEquivalent(g.totalLogged, g.target_hours, unit);
     const remainingAmount = Math.max(0, g.target_hours - g.totalLogged);
+    const pacingDays = g.end_date
+      ? daysLeftUntil(g.end_date)
+      : g.goal_type === "monthly"
+        ? daysLeftInMonth
+        : 30;
     const suggestedDailyMinutes = bookCompletion
       ? Math.min(
           60,
@@ -56,9 +73,15 @@ export const formatGoalsForSchedule = (goals: GoalWithProgress[]): GoalForSchedu
               : Math.ceil(Math.min(remainingAmount * 20, 45)),
           ),
         )
-      : g.goal_type === "monthly"
-        ? Math.min(60, Math.max(15, Math.ceil((remainingHours * 60) / daysLeftInMonth)))
+      : g.goal_type === "monthly" || g.end_date
+        ? Math.min(60, Math.max(15, Math.ceil((remainingHours * 60) / pacingDays)))
         : Math.min(45, Math.max(15, Math.ceil(remainingHours > 0 ? 30 : 15)));
+
+    const priority = goalSchedulePriority(g);
+    const boostedMinutes = Math.min(
+      60,
+      Math.ceil(suggestedDailyMinutes * (priority >= 75 ? 1.25 : priority >= 50 ? 1.1 : 1)),
+    );
 
     return {
       id: g.id,
@@ -69,8 +92,10 @@ export const formatGoalsForSchedule = (goals: GoalWithProgress[]): GoalForSchedu
       target_unit: unit,
       totalLogged: g.totalLogged,
       remainingHours,
-      suggestedDailyMinutes,
+      suggestedDailyMinutes: boostedMinutes,
       streak: g.streak,
+      end_date: g.end_date,
+      urgency: normalizeGoalUrgency(g.urgency),
     };
   });
 };
@@ -82,7 +107,9 @@ export const buildGoalsSchedulePrompt = (goals: GoalForSchedule[]): string => {
     const progressLabel = isBookCompletionUnit(g.target_unit)
       ? `${formatGoalProgress(g.totalLogged, g.target_hours, g.target_unit)} complete`
       : `${formatGoalProgress(g.totalLogged, g.target_hours, g.target_unit)} done (${g.remainingHours.toFixed(1)}h left)`;
-    return `- 🎯 "${g.title}" (${g.category}, ${progressLabel}, streak ${g.streak}d) → schedule ~${g.suggestedDailyMinutes} min today`;
+    const deadlineLabel = g.end_date ? `, finish by ${g.end_date.slice(0, 10)}` : "";
+    const urgencyLabel = g.urgency === "important" ? ", important" : "";
+    return `- 🎯 "${g.title}" (${g.category}, ${progressLabel}, streak ${g.streak}d${urgencyLabel}${deadlineLabel}) → schedule ~${g.suggestedDailyMinutes} min today`;
   });
 
   return `\n\n🎯 LONG-TERM GOALS — MUST INCLUDE IN TODAY'S SCHEDULE:
@@ -90,6 +117,7 @@ ${lines.join("\n")}
 
 Goal scheduling rules:
 - Each active goal above MUST receive at least one dedicated block today (use 🎯 prefix in the task title).
+- IMPORTANT goals and goals nearing their finish-by date MUST be scheduled before minor goals with distant deadlines.
 - Place blocks in gaps between fixed calendar events; never overlap [FIXED] items.
 - Fitness goals → morning slots when possible; creative → evening; learning → afternoon focus windows.
 - Use Atomic Habits: keep blocks small (15–45 min) and stack after existing habits when sensible.`;
@@ -356,16 +384,30 @@ export const fillGoalGapsInSchedule = (
   let working = attachGoalIdsToSchedule(schedule, goals);
   const additions: ScheduleItem[] = [];
 
-  for (const goal of goals) {
+  const prioritized = [...goals].sort(
+    (a, b) => goalSchedulePriority(b) - goalSchedulePriority(a),
+  );
+
+  for (const goal of prioritized) {
     if (scheduleCoversGoal(working, goal)) continue;
 
-    const blockMinutes = Math.min(goal.suggestedDailyMinutes, 45);
+    const priority = goalSchedulePriority(goal);
+    const blockMinutes = Math.min(
+      Math.ceil(
+        goal.suggestedDailyMinutes *
+          (priority >= 75 ? 1.3 : priority >= 50 ? 1.15 : 1),
+      ),
+      60,
+    );
     const gaps = findScheduleGaps(working, dayStart, dayEnd, blockMinutes);
     const scored = gaps
       .filter((g) => g.end - g.start >= blockMinutes)
       .map((g) => ({
         gap: g,
-        score: gapScoreForCategory(g.start, goal.category) + (g.end - g.start) / 120,
+        score:
+          gapScoreForCategory(g.start, goal.category) +
+          (g.end - g.start) / 120 +
+          priority / 8,
       }))
       .sort((a, b) => b.score - a.score);
 
