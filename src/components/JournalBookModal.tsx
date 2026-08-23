@@ -11,6 +11,8 @@ import {
   mergeCalendarImportHistory,
   type SavedCalendarImport,
 } from "@/lib/calendarImportHistory";
+import JournalEntryContent from "@/components/JournalEntryContent";
+import { journalContentToPlainText } from "@/lib/journalReferences";
 
 interface JournalEntry {
   id: string;
@@ -127,7 +129,7 @@ const JournalBookModal = ({ open, onClose }: JournalBookModalProps) => {
       const t = new Date(e.created_at).getTime();
       if (start !== null && t < start) return false;
       if (end !== null && t > end) return false;
-      if (q && !e.content.toLowerCase().includes(q)) return false;
+      if (q && !journalContentToPlainText(e.content).toLowerCase().includes(q)) return false;
       return true;
     });
   }, [entries, search, startDate, endDate]);
@@ -140,8 +142,9 @@ const JournalBookModal = ({ open, onClose }: JournalBookModalProps) => {
       if (endDate && s.schedule_date > endDate) return false;
       if (!q) return true;
       const items = Array.isArray(s.schedule_data) ? s.schedule_data : [];
+      const journalPlain = s.journal_text ? journalContentToPlainText(s.journal_text) : "";
       const hay = [
-        s.journal_text ?? "",
+        journalPlain,
         ...items.map((i: any) => `${i?.title ?? ""} ${i?.description ?? ""}`),
       ]
         .join(" ")
@@ -345,12 +348,11 @@ const JournalBookModal = ({ open, onClose }: JournalBookModalProps) => {
                       >
                         {formatWhen(entry.created_at)}
                       </div>
-                      <p
+                      <JournalEntryContent
+                        content={entry.content}
                         className="text-sm text-foreground whitespace-pre-wrap leading-relaxed"
-                        style={{ fontFamily: "var(--font-body)" }}
-                      >
-                        {entry.content}
-                      </p>
+                        bodyStyle={{ fontFamily: "var(--font-body)" }}
+                      />
                     </div>
                   ))
                 )
@@ -412,12 +414,11 @@ const JournalBookModal = ({ open, onClose }: JournalBookModalProps) => {
                                 >
                                   Journal
                                 </div>
-                                <p
+                                <JournalEntryContent
+                                  content={s.journal_text}
                                   className="text-sm text-foreground whitespace-pre-wrap leading-relaxed"
-                                  style={{ fontFamily: "var(--font-body)" }}
-                                >
-                                  {s.journal_text}
-                                </p>
+                                  bodyStyle={{ fontFamily: "var(--font-body)" }}
+                                />
                               </div>
                             )}
                             {items.length > 0 ? (

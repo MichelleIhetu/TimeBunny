@@ -153,7 +153,7 @@ const VibeCheck = () => {
       className="min-h-screen relative overflow-hidden flex items-center justify-center p-4"
       style={{ background: COLORS.bg }}
     >
-      <SEO title="Vibe Check — TimeBunny" description="Hourly motivation check-in that adjusts the rest of your TimeBunny schedule." path="/vibe-check" />
+      <SEO title="Vibe Check — TimeBunny" description="Motivation check-in every hour and a half that adjusts the rest of your TimeBunny schedule." path="/vibe-check" />
 
       {/* Decorative clock tick marks like the active timer scene */}
       <div className="absolute inset-0 pointer-events-none flex items-center justify-center opacity-50">

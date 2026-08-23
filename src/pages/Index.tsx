@@ -7,7 +7,7 @@ import { getFormattedDate } from "@/lib/dayGreetings";
 import { toast } from "sonner";
 import WizardInterface from "@/components/WizardInterface";
 import LandingBunnySpeech from "@/components/LandingBunnySpeech";
-import { useHourlyCheckIn } from "@/hooks/useHourlyCheckIn";
+import { useHourlyCheckIn, VIBE_CHECK_INTERVAL_MINUTES } from "@/hooks/useHourlyCheckIn";
 import { useChat } from "@/hooks/useChat";
 import { useGoals } from "@/hooks/useGoals";
 import { formatGoalsForSchedule } from "@/lib/goalsSchedule";
@@ -150,7 +150,7 @@ const Index = () => {
 
   const { completeCheckIn } = useHourlyCheckIn({
     enabled: generatedSchedule.length > 0,
-    intervalMinutes: 15,
+    intervalMinutes: VIBE_CHECK_INTERVAL_MINUTES,
     onCheckInDue: () => {
       navigate("/vibe-check");
     },
@@ -170,25 +170,35 @@ const Index = () => {
       needBreak: result.needBreak,
     });
 
+    const optimizeMode: ScheduleGenerationContext["optimizeMode"] =
+      result.adjustSchedule === "reschedule"
+        ? "reschedule"
+        : result.adjustSchedule === "lighten"
+          ? stress.criticalOnly
+            ? "critical_only"
+            : "lighten"
+          : "default";
+
+    const shouldRefreshSchedule = result.adjustSchedule !== "keep";
+
     if (stress.criticalOnly) {
       toast("Keeping today to the essentials — only what matters most.");
     } else if (result.mood === "struggling") {
       toast("Hang in there! We've noted your vibe.", { icon: "💪" });
     } else if (result.mood === "great") {
-      toast("You're killing it! Updating your schedule…", { icon: "🔥" });
-    } else {
+      toast("You're killing it!", { icon: "🔥" });
+    } else if (shouldRefreshSchedule) {
       toast("Vibe check complete — refreshing your schedule", { icon: "✨" });
+    } else {
+      toast("Vibe check complete — back to your session", { icon: "✨" });
     }
     if (result.needBreak) toast("Adding a break for you — take it easy!", { icon: "☕" });
 
-    const optimizeMode: ScheduleGenerationContext["optimizeMode"] =
-      result.adjustSchedule === "reschedule"
-        ? "reschedule"
-        : result.adjustSchedule === "lighten" || stress.criticalOnly
-          ? "critical_only"
-          : stress.detected
-            ? "lighten"
-            : "default";
+    if (!shouldRefreshSchedule) {
+      setViewMode("schedule");
+      window.history.replaceState({}, document.title);
+      return;
+    }
 
     loadTodaySchedule().then((session) => {
       const vibeChecks = session?.vibeChecks ?? [];

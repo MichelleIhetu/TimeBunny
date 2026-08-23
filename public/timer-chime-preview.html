@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>TimeBunny — Timer chime preview</title>
+  <style>
+    body {
+      font-family: system-ui, sans-serif;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      margin: 0;
+      background: hsl(300 50% 88%);
+      gap: 1rem;
+    }
+    button {
+      padding: 1rem 2rem;
+      font-size: 1.1rem;
+      border: none;
+      border-radius: 999px;
+      background: hsl(280 70% 50%);
+      color: white;
+      cursor: pointer;
+    }
+    button:hover { filter: brightness(1.08); }
+    p { color: hsl(280 40% 30%); max-width: 28rem; text-align: center; }
+    a.firefox-link {
+      color: hsl(280 70% 45%);
+      font-weight: 600;
+      word-break: break-all;
+    }
+    code {
+      display: block;
+      margin-top: 0.5rem;
+      padding: 0.75rem;
+      background: white;
+      border-radius: 0.5rem;
+      font-size: 0.85rem;
+      word-break: break-all;
+    }
+  </style>
+</head>
+<body>
+  <h1>Timer “time’s up” chime</h1>
+  <p>Same soft kawaii arpeggio that plays when your Pomodoro hits zero.</p>
+  <p>
+    <strong>Firefox link</strong> (works without dev server — paste into the address bar):<br />
+    <a class="firefox-link" id="firefox-link" href="file:///C:/Users/Michelle%20Ihetu/TimeBunny/public/timer-chime-preview.html">file:///C:/Users/Michelle%20Ihetu/TimeBunny/public/timer-chime-preview.html</a>
+  </p>
+  <p>
+    With dev server running:<br />
+    <a class="firefox-link" href="http://localhost:8081/timer-chime-preview.html">http://localhost:8081/timer-chime-preview.html</a>
+  </p>
+  <button type="button" id="play">▶ One chime</button>
+  <button type="button" id="loop">▶ 90 sec loop (like timer)</button>
+  <script>
+    function playTimerUpChimeOnce(ctx, volume = 0.2) {
+      const now = ctx.currentTime;
+      const notes = [
+        { freq: 988, at: 0, hold: 0.5 },
+        { freq: 1175, at: 0.14, hold: 0.5 },
+        { freq: 1319, at: 0.28, hold: 0.55 },
+        { freq: 1568, at: 0.42, hold: 0.7 },
+        { freq: 1760, at: 0.58, hold: 0.85 },
+      ];
+      notes.forEach(({ freq, at, hold }) => {
+        const t = now + at;
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.type = "triangle";
+        osc.frequency.setValueAtTime(freq, t);
+        gain.gain.setValueAtTime(0, t);
+        gain.gain.linearRampToValueAtTime(volume, t + 0.025);
+        gain.gain.exponentialRampToValueAtTime(0.001, t + hold);
+        osc.start(t);
+        osc.stop(t + hold + 0.05);
+      });
+    }
+    let interval = null;
+    let timeout = null;
+    function stopAlarm() {
+      if (interval) clearInterval(interval);
+      if (timeout) clearTimeout(timeout);
+    }
+    function startAlarm() {
+      stopAlarm();
+      const ctx = new AudioContext();
+      playTimerUpChimeOnce(ctx);
+      interval = setInterval(() => playTimerUpChimeOnce(ctx), 1700);
+      timeout = setTimeout(stopAlarm, 90000);
+    }
+    document.getElementById("play").addEventListener("click", () => {
+      stopAlarm();
+      playTimerUpChimeOnce(new AudioContext());
+    });
+    document.getElementById("loop").addEventListener("click", startAlarm);
+  </script>
+</body>
+</html>

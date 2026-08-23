@@ -6,6 +6,10 @@ import { Button } from "@/components/ui/button";
 import { UserSettings, EnergyLevel, StressLevel, ScheduleItem, DEFAULT_SCHEDULE_SUIT } from "@/types/schedule";
 import CalendarImportModal, { CalendarEvent } from "./CalendarImportModal";
 import JournalBookModal from "./JournalBookModal";
+import JournalReferencePicker from "./JournalReferencePicker";
+import JournalEditor, { type JournalEditorHandle } from "./JournalEditor";
+import type { JournalReferenceInsert } from "@/lib/journalReferences";
+import { journalContentToPlainText } from "@/lib/journalReferences";
 import type { AnalyzedTask } from "@/components/CalendarAnalysisModal";
 import {
   buildCalendarAnalysisPrompt,
@@ -21,10 +25,19 @@ import { buildGoalsSchedulePrompt, formatGoalsForSchedule, formatPomodoroTimer, 
 import { CALENDAR_SYNCED_EVENT } from "@/lib/calendarSync";
 import { CRITICAL_ONLY_COMFORT_MESSAGES } from "@/lib/vibeStressDetection";
 import {
+  clearPomodoroSession,
+  computeRemainingSeconds,
+  findTaskForSession,
+  loadPomodoroSession,
+  savePomodoroSession,
+} from "@/lib/pomodoroSessionPersistence";
+import {
   isCriticalScheduleTask,
   pickCriticalVictoryMessage,
   playCompletionDing,
   playCriticalVictoryFanfare,
+  startTimerUpAlarm,
+  stopTimerUpAlarm,
 } from "@/lib/pomodoroBunny";
 import { toast } from "sonner";
 import { markCalendarEventComplete } from "@/lib/calendar/markCalendarEventComplete";
@@ -32,6 +45,8 @@ import { resolveCalendarEventForScheduleItem } from "@/lib/calendar/scheduleCale
 import { loadJournalSpeechBubblePosition } from "@/lib/journalSpeechBubblePosition";
 import { supabase } from "@/integrations/supabase/client";
 import PomodoroBunnyCompanion from "@/components/PomodoroBunnyCompanion";
+import LofiRadioButton from "@/components/LofiRadioButton";
+import { useLofiRadio } from "@/hooks/useLofiRadio";
 import libraryBg from "@/assets/library-background.png";
 import cozyBg from "@/assets/cozy-background.png";
 import scheduleBg from "@/assets/schedule-background.png";
@@ -251,6 +266,7 @@ const WizardInterface = ({ settings, onSettingsChange, onComplete, isLoading, ge
   const [bubbleClickCount, setBubbleClickCount] = useState(0);
   const [journalText, setJournalText] = useState("");
   const [isJournalFocused, setIsJournalFocused] = useState(false);
+  const journalEditorRef = useRef<JournalEditorHandle>(null);
   const [isBookOpen, setIsBookOpen] = useState(false);
   const [draftResumed, setDraftResumed] = useState(false);
   const journalBubblePos = useMemo(() => loadJournalSpeechBubblePosition(), []);
@@ -280,6 +296,12 @@ const WizardInterface = ({ settings, onSettingsChange, onComplete, isLoading, ge
   useEffect(() => {
     if (draftResumed && scene === "cozy") setIsJournalFocused(true);
   }, [draftResumed, scene]);
+
+  useEffect(() => {
+    if (isJournalFocused && scene === "cozy") {
+      requestAnimationFrame(() => journalEditorRef.current?.focus());
+    }
+  }, [isJournalFocused, scene]);
 
   // Dismiss the "resumed" indicator after a few seconds
   useEffect(() => {
@@ -315,6 +337,73 @@ const WizardInterface = ({ settings, onSettingsChange, onComplete, isLoading, ge
   const [criticalVictoryTick, setCriticalVictoryTick] = useState(0);
   const [completedTasks, setCompletedTasks] = useState<Set<string>>(new Set());
   const [markingCalendarEvent, setMarkingCalendarEvent] = useState(false);
+  const pomodoroRestoredRef = useRef(false);
+  const { playing: lofiPlaying, toggle: toggleLofi, currentTrack: lofiTrack } = useLofiRadio(
+    scene === "schedule" && !!activeTask,
+  );
+  const activeTaskRef = useRef<ScheduleItem | null>(null);
+  const timerSecondsRef = useRef(0);
+  const timerDurationRef = useRef(0);
+  const timerRunningRef = useRef(false);
+  const timerCompleteChimePlayedRef = useRef(false);
+
+  useEffect(() => {
+    activeTaskRef.current = activeTask;
+    timerSecondsRef.current = timerSeconds;
+    timerDurationRef.current = timerDuration;
+    timerRunningRef.current = timerRunning;
+  }, [activeTask, timerSeconds, timerDuration, timerRunning]);
+
+  // Freeze & pause the timer when this view unmounts (e.g. vibe check navigation).
+  useEffect(() => {
+    return () => {
+      const task = activeTaskRef.current;
+      if (!task || timerSecondsRef.current <= 0) return;
+
+      savePomodoroSession({
+        taskId: task.id,
+        taskTitle: task.title,
+        taskTime: task.time,
+        timerSeconds: timerSecondsRef.current,
+        timerDuration: timerDurationRef.current,
+        timerRunning: false,
+        savedAt: new Date().toISOString(),
+      });
+    };
+  }, []);
+
+  // Restore an in-progress Pomodoro after vibe check (or other route) unmounts this view.
+  useEffect(() => {
+    if (pomodoroRestoredRef.current || generatedSchedule.length === 0) return;
+
+    const saved = loadPomodoroSession();
+    if (!saved) return;
+
+    const task = findTaskForSession(generatedSchedule, saved);
+    if (!task) return;
+
+    pomodoroRestoredRef.current = true;
+    const remaining = computeRemainingSeconds(saved);
+
+    setActiveTask(task);
+    setTimerDuration(saved.timerDuration);
+    setTimerSeconds(remaining);
+    setTimerRunning(saved.timerRunning && remaining > 0);
+  }, [generatedSchedule]);
+
+  useEffect(() => {
+    if (!activeTask) return;
+
+    savePomodoroSession({
+      taskId: activeTask.id,
+      taskTitle: activeTask.title,
+      taskTime: activeTask.time,
+      timerSeconds,
+      timerDuration,
+      timerRunning,
+      savedAt: new Date().toISOString(),
+    });
+  }, [activeTask, timerSeconds, timerDuration, timerRunning]);
 
   const celebrationMessages = [
     "You crushed it! On to the next one~",
@@ -343,7 +432,29 @@ const WizardInterface = ({ settings, onSettingsChange, onComplete, isLoading, ge
     }
   }, [timerRunning]);
 
+  // Soft kawaii chime when the countdown naturally reaches zero.
+  useEffect(() => {
+    if (
+      activeTask &&
+      timerDuration > 0 &&
+      timerSeconds === 0 &&
+      !timerRunning &&
+      !timerCompleteChimePlayedRef.current
+    ) {
+      timerCompleteChimePlayedRef.current = true;
+      startTimerUpAlarm();
+      return;
+    }
+
+    if (timerSeconds > 0 || !activeTask) {
+      timerCompleteChimePlayedRef.current = false;
+    }
+  }, [activeTask, timerDuration, timerSeconds, timerRunning]);
+
+  useEffect(() => () => stopTimerUpAlarm(), []);
+
   const startTask = (item: ScheduleItem) => {
+    stopTimerUpAlarm();
     const totalSec = getPomodoroDurationSeconds(item, generatedSchedule, { bedTime: settings.bedTime });
     setActiveTask(item);
     setTimerDuration(totalSec);
@@ -371,9 +482,11 @@ const WizardInterface = ({ settings, onSettingsChange, onComplete, isLoading, ge
   };
 
   const stopTask = () => {
+    stopTimerUpAlarm();
     setActiveTask(null);
     setTimerRunning(false);
     setTimerSeconds(0);
+    clearPomodoroSession();
     if (timerRef.current) clearInterval(timerRef.current);
   };
 
@@ -404,12 +517,14 @@ const WizardInterface = ({ settings, onSettingsChange, onComplete, isLoading, ge
 
   const applyTaskFullyComplete = useCallback(
     (task: ScheduleItem) => {
+      stopTimerUpAlarm();
       const remaining = generatedSchedule.filter((s) => s.id !== task.id);
       onScheduleChange?.(remaining);
       setTimerRunning(false);
       if (timerRef.current) clearInterval(timerRef.current);
       setActiveTask(null);
       setTimerSeconds(0);
+      clearPomodoroSession();
       toast.success("Task marked complete!");
     },
     [generatedSchedule, onScheduleChange],
@@ -417,6 +532,8 @@ const WizardInterface = ({ settings, onSettingsChange, onComplete, isLoading, ge
 
   const completeSession = useCallback(() => {
     if (!activeTask) return;
+
+    stopTimerUpAlarm();
 
     const isCritical = isCriticalScheduleTask(activeTask, calendarAnalysis, comfortMode);
     if (isCritical) {
@@ -663,6 +780,11 @@ const WizardInterface = ({ settings, onSettingsChange, onComplete, isLoading, ge
     return distressKeywords.some(keyword => lower.includes(keyword));
   };
 
+  const handleInsertJournalReference = useCallback((reference: JournalReferenceInsert) => {
+    journalEditorRef.current?.saveSelection();
+    journalEditorRef.current?.insertReference(reference);
+  }, []);
+
   // Called when user clicks "Generate Schedule" in the journal
   const handleComplete = () => {
     setIsJournalFocused(false);
@@ -683,7 +805,7 @@ const WizardInterface = ({ settings, onSettingsChange, onComplete, isLoading, ge
 
 
     // Check for distress in journal text — show encouragement first
-    if (detectDistress(journalText)) {
+    if (detectDistress(journalContentToPlainText(journalText))) {
       const msg = encouragementMessages[Math.floor(Math.random() * encouragementMessages.length)];
       setScene("energy");
       showBunnyMessage(msg, () => {
@@ -744,7 +866,7 @@ const WizardInterface = ({ settings, onSettingsChange, onComplete, isLoading, ge
     const startNote = `\n\nSchedule starts NOW at ${startTime} (current real time). Only schedule tasks from this time onwards, not from wake time.`;
 
     const journalNote = journalText.trim()
-      ? `\n\nHere's what the user wrote about their day:\n"${journalText.trim()}"\nPlease incorporate any mentioned tasks, commitments, or context into the schedule.`
+      ? `\n\nHere's what the user wrote about their day:\n"${journalContentToPlainText(journalText.trim())}"\nPlease incorporate any mentioned tasks, commitments, or context into the schedule.`
       : "";
 
     const goalsPrompt = buildGoalsSchedulePrompt(formattedGoals);
@@ -872,6 +994,18 @@ const WizardInterface = ({ settings, onSettingsChange, onComplete, isLoading, ge
               >
                 <div className="relative w-full h-full bg-card/90 backdrop-blur-md rounded-xl border border-primary/20 shadow-xl p-4">
                   <div className="absolute top-2 right-2 flex items-center gap-2 z-10">
+                    <JournalReferencePicker
+                      calendarEvents={importedEvents}
+                      analyzedTasks={calendarAnalysis}
+                      scheduleItems={generatedSchedule}
+                      tasks={taskEntries.map((t) => ({
+                        id: t.id,
+                        title: t.title,
+                        deadline: t.deadline,
+                      }))}
+                      onBeforeOpen={() => journalEditorRef.current?.saveSelection()}
+                      onInsert={handleInsertJournalReference}
+                    />
                     <button
                       type="button"
                       onClick={(e) => { e.stopPropagation(); setIsBookOpen(true); }}
@@ -900,18 +1034,15 @@ const WizardInterface = ({ settings, onSettingsChange, onComplete, isLoading, ge
                     </div>
                   )}
 
-                  <textarea
+                  <JournalEditor
+                    ref={journalEditorRef}
                     value={journalText}
-                    onChange={(e) => setJournalText(e.target.value)}
+                    onChange={setJournalText}
                     placeholder="What's on your mind today?"
-                    className="w-full bg-transparent resize-none focus:outline-none text-white placeholder:text-white/40 leading-[2rem]"
+                    className="w-full bg-transparent focus:outline-none"
                     style={{
-                      fontFamily: "var(--font-body)",
-                      fontSize: "1rem",
-                      caretColor: "white",
                       height: journalText.trim() ? "calc(100% - 4.5rem)" : "calc(100% - 2rem)",
                     }}
-                    autoFocus
                   />
                   {journalText.trim() && (
                     <div className="absolute bottom-3 left-4 right-4 z-20">
@@ -1034,6 +1165,13 @@ const WizardInterface = ({ settings, onSettingsChange, onComplete, isLoading, ge
                 className="fixed inset-0 z-50 flex flex-col items-center justify-center overflow-hidden"
                 style={{ background: "hsl(300 50% 88%)" }}
               >
+                <LofiRadioButton
+                  playing={lofiPlaying}
+                  trackTitle={lofiTrack?.title}
+                  onToggle={toggleLofi}
+                  className="fixed top-4 left-4 z-[60]"
+                />
+
                 {/* Clock outline background */}
                 <div className="absolute inset-0 flex items-center justify-center pointer-events-none overflow-hidden">
                   <div

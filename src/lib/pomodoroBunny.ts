@@ -112,6 +112,83 @@ export function playCriticalVictoryFanfare() {
   }
 }
 
+/** Soft kawaii chime — one pass (~1.5s). */
+export const TIMER_UP_CHIME_VOLUME = 0.2;
+export const TIMER_UP_ALARM_DURATION_MS = 90_000;
+const TIMER_UP_CHIME_LOOP_MS = 1_700;
+
+let timerUpAlarmInterval: ReturnType<typeof setInterval> | null = null;
+let timerUpAlarmTimeout: ReturnType<typeof setTimeout> | null = null;
+let timerUpAlarmContext: AudioContext | null = null;
+
+function playTimerUpChimeOnce(ctx: AudioContext, volume = TIMER_UP_CHIME_VOLUME) {
+  const now = ctx.currentTime;
+  const notes = [
+    { freq: 988, at: 0, hold: 0.5 },
+    { freq: 1175, at: 0.14, hold: 0.5 },
+    { freq: 1319, at: 0.28, hold: 0.55 },
+    { freq: 1568, at: 0.42, hold: 0.7 },
+    { freq: 1760, at: 0.58, hold: 0.85 },
+  ];
+
+  notes.forEach(({ freq, at, hold }) => {
+    const t = now + at;
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.type = "triangle";
+    osc.frequency.setValueAtTime(freq, t);
+    gain.gain.setValueAtTime(0, t);
+    gain.gain.linearRampToValueAtTime(volume, t + 0.025);
+    gain.gain.exponentialRampToValueAtTime(0.001, t + hold);
+    osc.start(t);
+    osc.stop(t + hold + 0.05);
+  });
+}
+
+/** Stop the extended timer-up alarm (Session Done, Stop, etc.). */
+export function stopTimerUpAlarm() {
+  if (timerUpAlarmInterval) {
+    clearInterval(timerUpAlarmInterval);
+    timerUpAlarmInterval = null;
+  }
+  if (timerUpAlarmTimeout) {
+    clearTimeout(timerUpAlarmTimeout);
+    timerUpAlarmTimeout = null;
+  }
+  if (timerUpAlarmContext) {
+    void timerUpAlarmContext.close().catch(() => {});
+    timerUpAlarmContext = null;
+  }
+}
+
+/** Louder kawaii chime loop — plays ~1 min 30 sec unless stopped early. */
+export function startTimerUpAlarm() {
+  stopTimerUpAlarm();
+  try {
+    const ctx = new AudioContext();
+    timerUpAlarmContext = ctx;
+    playTimerUpChimeOnce(ctx);
+    timerUpAlarmInterval = setInterval(() => {
+      if (timerUpAlarmContext) playTimerUpChimeOnce(timerUpAlarmContext);
+    }, TIMER_UP_CHIME_LOOP_MS);
+    timerUpAlarmTimeout = setTimeout(() => stopTimerUpAlarm(), TIMER_UP_ALARM_DURATION_MS);
+  } catch {
+    /* audio blocked */
+  }
+}
+
+/** Single chime — preview / one-shot use. */
+export function playTimerUpChime() {
+  try {
+    const ctx = new AudioContext();
+    playTimerUpChimeOnce(ctx);
+  } catch {
+    /* audio blocked */
+  }
+}
+
 export function playCompletionDing() {
   try {
     const ctx = new AudioContext();

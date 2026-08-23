@@ -1,6 +1,9 @@
 import { useState, useEffect, useCallback } from "react";
 import { CheckInData } from "@/components/CheckInModal";
 
+/** How often automatic vibe checks appear while a schedule is active. */
+export const VIBE_CHECK_INTERVAL_MINUTES = 90;
+
 interface UseHourlyCheckInProps {
   enabled: boolean;
   intervalMinutes?: number;
@@ -14,7 +17,7 @@ interface CheckInHistory {
 
 export const useHourlyCheckIn = ({ 
   enabled, 
-  intervalMinutes = 60,
+  intervalMinutes = VIBE_CHECK_INTERVAL_MINUTES,
   onCheckInDue 
 }: UseHourlyCheckInProps) => {
   const [isCheckInDue, setIsCheckInDue] = useState(false);
