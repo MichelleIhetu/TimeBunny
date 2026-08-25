@@ -241,10 +241,13 @@ export const enforceEveningContext = (
   const eodDur = eod.reduce((sum, item) => sum + itemDurationMinutes(item), 0);
   const eveningLimit = bed ?? cutoff + eodDur;
   const workEndLimit = Math.max(cutoff, eveningLimit - Math.min(eodDur, 25));
+  const packedEnd = Math.min(cutoff, workEndLimit);
 
-  let cursor = lastDaytimeEnd;
-  if (cursor + misplacedDur > workEndLimit) {
-    cursor = Math.max(0, workEndLimit - misplacedDur);
+  // Park leftover work so it *ends* at wind-down/bedtime — never at midnight
+  // just because nothing else was on the afternoon calendar.
+  let cursor = Math.max(0, packedEnd - misplacedDur);
+  if (daytime.length > 0 && lastDaytimeEnd > 0 && lastDaytimeEnd + misplacedDur <= packedEnd) {
+    cursor = lastDaytimeEnd;
   }
 
   const placedMisplaced = misplaced.map((item) => {
