@@ -518,6 +518,7 @@ const WelcomeBack = () => {
       calendarAnalysis: context?.calendarAnalysis ?? importedCalendarTasks,
       vibeChecks: context?.vibeChecks,
       optimizeMode: context?.optimizeMode,
+      existingSchedule: context?.existingSchedule ?? generatedSchedule,
     });
     goToWizard();
   };

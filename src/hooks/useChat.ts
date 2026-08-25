@@ -1,6 +1,7 @@
 import { useState, useCallback } from "react";
 import { ChatMessage, UserSettings, ScheduleItem } from "@/types/schedule";
 import { fillGoalGapsInSchedule, type GoalForSchedule } from "@/lib/goalsSchedule";
+import { enforceEveningContext, mergeScheduleUpdate } from "@/lib/scheduleAdjustments";
 import {
   localDateString,
   localTimeString,
@@ -40,6 +41,7 @@ export function useChat(settings: UserSettings) {
       calendarAnalysis?: ScheduleGenerationContext["calendarAnalysis"];
       vibeChecks?: ScheduleGenerationContext["vibeChecks"];
       optimizeMode?: ScheduleGenerationContext["optimizeMode"];
+      existingSchedule?: ScheduleItem[];
     },
   ) => {
     const userMessage: ChatMessage = {
@@ -71,6 +73,7 @@ export function useChat(settings: UserSettings) {
           calendarAnalysis: options?.calendarAnalysis ?? [],
           vibeChecks: options?.vibeChecks ?? [],
           optimizeMode: options?.optimizeMode ?? "default",
+          existingSchedule: options?.existingSchedule ?? [],
           timezone: getUserTimezone(),
           currentTime: new Date().toISOString(),
           localDate: localDateString(),
@@ -155,11 +158,22 @@ export function useChat(settings: UserSettings) {
       // Check for schedule in final content
       const schedule = parseScheduleFromContent(assistantContent);
       if (schedule.length > 0) {
+        const existing = options?.existingSchedule ?? [];
+        const keepDroppedFuture =
+          options?.optimizeMode === "lighten" || options?.optimizeMode === "critical_only";
+        const withHistory =
+          existing.length > 0
+            ? mergeScheduleUpdate(existing, schedule, localTimeString(), {
+                keepDroppedFuture,
+                bedTime: settings.bedTime,
+              })
+            : enforceEveningContext(schedule, settings.bedTime);
         const goalsList = (options?.goals ?? []) as GoalForSchedule[];
-        const merged =
+        const withGoals =
           goalsList.length > 0
-            ? fillGoalGapsInSchedule(schedule, goalsList, settings)
-            : schedule;
+            ? fillGoalGapsInSchedule(withHistory, goalsList, settings)
+            : withHistory;
+        const merged = enforceEveningContext(withGoals, settings.bedTime);
         setGeneratedSchedule(merged);
         toast.success("Your schedule is ready! ✨");
       }

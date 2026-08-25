@@ -10,8 +10,9 @@ import {
 import { Textarea } from "@/components/ui/textarea";
 import bunnyMascot from "@/assets/bunny-mascot.png";
 import { useAuth } from "@/hooks/useAuth";
-import { useSchedulePersistence } from "@/hooks/useSchedulePersistence";
+import { useSchedulePersistence, saveScheduleSnapshot, loadScheduleSnapshot } from "@/hooks/useSchedulePersistence";
 import { detectVibeStressSignals } from "@/lib/vibeStressDetection";
+import type { ScheduleItem } from "@/types/schedule";
 
 export interface VibeCheckResult {
   mood: "great" | "okay" | "struggling";
@@ -103,6 +104,10 @@ const VibeCheck = () => {
     return "happy" as const;
   };
 
+  const locationSchedule = (location.state as { schedule?: ScheduleItem[] } | null)?.schedule ?? [];
+  const incomingSchedule =
+    locationSchedule.length > 0 ? locationSchedule : loadScheduleSnapshot()?.schedule ?? [];
+
   const handleFinish = async () => {
     const base = {
       mood: mood!,
@@ -114,6 +119,10 @@ const VibeCheck = () => {
     const stressSignals = detectVibeStressSignals(base);
     const result: VibeCheckResult = { ...base, stressSignals };
 
+    if (incomingSchedule.length > 0) {
+      saveScheduleSnapshot(incomingSchedule, null);
+    }
+
     try {
       await appendVibeCheck({ at: new Date().toISOString(), ...result });
     } catch (e) {
@@ -124,6 +133,7 @@ const VibeCheck = () => {
       state: {
         vibeCheckResult: result,
         openScheduleView: true,
+        schedule: incomingSchedule,
       },
     });
   };
@@ -386,10 +396,10 @@ const VibeCheck = () => {
                     ))}
                   </div>
 
-                  {pendingStress?.detected && (
+                  {pendingStress?.criticalOnly && adjustSchedule !== "keep" && (
                     <p style={VT} className="text-base">
                       <span style={{ color: COLORS.red }}>
-                        We'll keep today to the essentials — only what truly needs doing.
+                        We'll keep today to the essentials — only what truly needs doing. Your earlier tasks stay on the list.
                       </span>
                     </p>
                   )}
@@ -398,8 +408,8 @@ const VibeCheck = () => {
                     <p style={VT} className="text-base">
                       <span style={{ color: COLORS.inkSoft }}>
                         {adjustSchedule === "lighten"
-                          ? "We'll push non-urgent tasks out to lighten your load."
-                          : "We'll rebuild your schedule from now — hang tight!"}
+                          ? "We'll push non-urgent tasks later today — your original tasks stay on the schedule."
+                          : "We'll reshape the rest of today — earlier tasks stay put."}
                       </span>
                     </p>
                   )}

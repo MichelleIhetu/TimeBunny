@@ -31,6 +31,7 @@ serve(async (req) => {
       calendarAnalysis,
       vibeChecks,
       optimizeMode,
+      existingSchedule,
     } = await req.json() as {
       messages: Array<{ role: string; content: string }>;
       settings: UserSettings;
@@ -66,6 +67,12 @@ serve(async (req) => {
         notes: string;
       }>;
       optimizeMode?: "default" | "lighten" | "reschedule" | "critical_only";
+      existingSchedule?: Array<{
+        title: string;
+        time: string;
+        endTime?: string;
+        description?: string;
+      }>;
       timezone?: string;
       localDate?: string;
       currentTime?: string;
@@ -132,9 +139,24 @@ ${vibeChecks
               `- ${v.at}: mood=${v.mood}, energy=${v.energy}, adjust=${v.adjustSchedule}${v.needBreak ? ", needs break" : ""}${v.notes ? ` — "${v.notes}"` : ""}`,
           )
           .join("\n")}
-${optimizeMode === "lighten" ? "\nMODE: LIGHTEN — defer non-urgent work, add breaks, reduce density." : ""}${optimizeMode === "reschedule" ? "\nMODE: RESCHEDULE — rebuild remaining day from current time." : ""}${optimizeMode === "critical_only" ? "\nMODE: CRITICAL ONLY — schedule [FIXED] calendar blocks + critical/deadline tasks ONLY. Defer moderate/minor/optional work. Short blocks, extra breaks." : ""}
+${optimizeMode === "lighten" ? "\nMODE: LIGHTEN — keep every original task. Move non-urgent work later today, add breaks, reduce density. Do not delete tasks." : ""}${optimizeMode === "reschedule" ? "\nMODE: RESCHEDULE — adjust remaining day from current time. Copy every earlier item unchanged." : ""}${optimizeMode === "critical_only" ? "\nMODE: CRITICAL ONLY — schedule [FIXED] calendar blocks + critical/deadline tasks first. Move moderate/minor/optional work later today. Do not delete original tasks. Short blocks, extra breaks." : ""}
 
 Adapt pacing and breaks to vibe history. struggling/low energy → gentler schedule.`
+        : "";
+
+    const existingBlock =
+      Array.isArray(existingSchedule) && existingSchedule.length > 0
+        ? `\n\n═══════════════════════════════════════
+CURRENT SCHEDULE (MUST USE AS CONTEXT)
+═══════════════════════════════════════
+${existingSchedule
+          .map(
+            (s) =>
+              `- ${s.time}${s.endTime ? `–${s.endTime}` : ""}: ${s.title}${s.description ? ` — ${s.description}` : ""}`,
+          )
+          .join("\n")}
+
+This list is the day's story so far. Copy items that already started unchanged. Do not invent a new day that contradicts it.`
         : "";
 
     const goalBlock = Array.isArray(goals) && goals.length > 0
@@ -156,7 +178,7 @@ User's current state:
 - Stress Level: ${settings.stressLevel}
 - Wake Time: ${settings.wakeTime}
 - Bed Time: ${settings.bedTime}
-${goalBlock}${calendarBlock}${vibeBlock}
+${goalBlock}${calendarBlock}${vibeBlock}${existingBlock}
 
 ═══════════════════════════════════════
 TIMEZONE & CURRENT TIME (CRITICAL)
@@ -166,7 +188,9 @@ TIMEZONE & CURRENT TIME (CRITICAL)
 - Current local time: ${currentLocalTime || "unknown"} (24-hour, user local)
 - ALL "time" / "endTime" fields in your output MUST be in this LOCAL timezone (${tz}), never UTC.
 - Wake Time (${settings.wakeTime}) and Bed Time (${settings.bedTime}) are already in the user's local timezone.
-- Never schedule tasks in the past: the FIRST task's "time" must be ≥ ${currentLocalTime || settings.wakeTime}.
+- Do not create NEW tasks in the past: newly added items must start at ≥ ${currentLocalTime || settings.wakeTime}.
+- If a CURRENT SCHEDULE is listed, copy every item that already started (time < ${currentLocalTime || settings.wakeTime}) UNCHANGED into the output — same title, time, and endTime. Then adjust only remaining items from now forward.
+- Asking for a break or a lighter load is an edit, not a reset. Keep original tasks findable on the schedule.
 - Any deadlines the user mentions (e.g. "due at 5 PM") are LOCAL TIME in ${tz}.
 - For [FIXED] calendar events, the provided start/end times are already converted to ${tz} — copy them exactly.
 
@@ -236,6 +260,17 @@ Stress-based scheduling:
 - Low stress: 15-min breaks every 2 hours
 
 Always include: meals scheduled around fixed blocks, a wind-down before bedtime, at least 2-3 breaks, and one "treat yourself" activity.
+
+═══════════════════════════════════════
+DAY ARC & EVENING CONTEXT (NON-NEGOTIABLE)
+═══════════════════════════════════════
+- Read the existing schedule, calendar, vibe, and bed time as one story. Do not ignore earlier blocks.
+- Chronological order must make human sense: work/homework → wind-down → bed. Never the reverse.
+- Wind-down, bedtime, "retire for the night", sleep, and lights-out are TERMINAL. They are the last things on the day.
+- NEVER schedule homework, studying, essays, or other focus work AFTER the user has already gone to bed or started winding down.
+- If leftover work remains, place it BEFORE wind-down (delay wind-down if needed) as long as it still ends by Bed Time (${settings.bedTime}).
+- No new focus tasks at or after Bed Time (${settings.bedTime}).
+- A 15–20 minute gap after "retire for the night" is not a homework slot.
 
 Be encouraging and practical, but NEVER sacrifice deadline accuracy for whimsy. The schedule must be REALISTIC and ACHIEVABLE.`;
 

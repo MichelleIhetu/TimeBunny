@@ -11,6 +11,7 @@ import { useHourlyCheckIn, VIBE_CHECK_INTERVAL_MINUTES } from "@/hooks/useHourly
 import { useChat } from "@/hooks/useChat";
 import { useGoals } from "@/hooks/useGoals";
 import { formatGoalsForSchedule } from "@/lib/goalsSchedule";
+import { insertBreakIntoSchedule } from "@/lib/scheduleAdjustments";
 import { useGoalScheduleSync } from "@/hooks/useGoalScheduleSync";
 import {
   buildExistingSchedulePrompt,
@@ -23,13 +24,14 @@ import { useAuth } from "@/hooks/useAuth";
 import {
   useSchedulePersistence,
   loadScheduleSnapshot,
+  saveScheduleSnapshot,
   hasSyncedCalendarToday,
 } from "@/hooks/useSchedulePersistence";
 import { SCHEDULE_UPDATE_REQUEST_EVENT } from "@/lib/scheduleUpdateNotice";
 import { CALENDAR_SYNCED_EVENT, CALENDAR_SYNC_NOW_EVENT } from "@/lib/calendarSync";
 import { setCalendarSyncPaused } from "@/lib/calendarSyncPause";
 import { notifyUrgentNewTasks } from "@/lib/urgentScheduleItems";
-import { UserSettings, DEFAULT_SCHEDULE_SUIT } from "@/types/schedule";
+import { UserSettings, DEFAULT_SCHEDULE_SUIT, type ScheduleItem } from "@/types/schedule";
 import { Button } from "@/components/ui/button";
 import CalendarAnalysisModal, { AnalyzedTask } from "@/components/CalendarAnalysisModal";
 import MonthlyCalendarModal from "@/components/MonthlyCalendarModal";
@@ -46,6 +48,7 @@ import {
   eventLocalDateString,
   getUserTimezone,
   localDateString,
+  localTimeString,
 } from "@/lib/localTime";
 
 const requestGoogleCalendarAccessToken = async (
@@ -145,6 +148,7 @@ const Index = () => {
   useEffect(() => {
     if (generatedSchedule.length > 0 && scheduleLoaded) {
       saveSchedule(generatedSchedule, settings);
+      saveScheduleSnapshot(generatedSchedule, settings);
     }
   }, [generatedSchedule, settings, scheduleLoaded]);
 
@@ -152,15 +156,20 @@ const Index = () => {
     enabled: generatedSchedule.length > 0,
     intervalMinutes: VIBE_CHECK_INTERVAL_MINUTES,
     onCheckInDue: () => {
-      navigate("/vibe-check");
+      saveScheduleSnapshot(generatedSchedule, settings);
+      navigate("/vibe-check", { state: { schedule: generatedSchedule } });
     },
   });
 
   useEffect(() => {
-    const state = location.state as { vibeCheckResult?: VibeCheckEntry } | null;
+    const state = location.state as {
+      vibeCheckResult?: VibeCheckEntry;
+      schedule?: ScheduleItem[];
+    } | null;
     if (!state?.vibeCheckResult) return;
 
     const result = state.vibeCheckResult;
+    const passedSchedule = Array.isArray(state.schedule) ? state.schedule : [];
     const stress = result.stressSignals ?? detectVibeStressSignals(result);
 
     completeCheckIn({
@@ -174,28 +183,45 @@ const Index = () => {
       result.adjustSchedule === "reschedule"
         ? "reschedule"
         : result.adjustSchedule === "lighten"
-          ? stress.criticalOnly
+          ? "lighten"
+          : stress.criticalOnly
             ? "critical_only"
-            : "lighten"
-          : "default";
+            : "default";
 
     const shouldRefreshSchedule = result.adjustSchedule !== "keep";
 
-    if (stress.criticalOnly) {
-      toast("Keeping today to the essentials — only what matters most.");
+    if (result.adjustSchedule === "lighten") {
+      toast("Lightening the load — your original tasks stay on the schedule.", { icon: "✨" });
+    } else if (stress.criticalOnly) {
+      toast("Keeping today to the essentials — earlier tasks stay put.");
     } else if (result.mood === "struggling") {
       toast("Hang in there! We've noted your vibe.", { icon: "💪" });
     } else if (result.mood === "great") {
       toast("You're killing it!", { icon: "🔥" });
     } else if (shouldRefreshSchedule) {
-      toast("Vibe check complete — refreshing your schedule", { icon: "✨" });
+      toast("Vibe check complete — adjusting the rest of your day", { icon: "✨" });
     } else {
       toast("Vibe check complete — back to your session", { icon: "✨" });
     }
     if (result.needBreak) toast("Adding a break for you — take it easy!", { icon: "☕" });
 
+    const applyBreakIfNeeded = (items: typeof passedSchedule) =>
+      result.needBreak ? insertBreakIntoSchedule(items, localTimeString()) : items;
+
     if (!shouldRefreshSchedule) {
-      setViewMode("schedule");
+      loadTodaySchedule().then((session) => {
+        const snap = loadScheduleSnapshot();
+        const base =
+          passedSchedule.length > 0
+            ? passedSchedule
+            : generatedSchedule.length > 0
+              ? generatedSchedule
+              : session?.schedule?.length
+                ? session.schedule
+                : snap?.schedule ?? [];
+        if (base.length > 0) setGeneratedSchedule(applyBreakIfNeeded(base));
+        setViewMode("schedule");
+      });
       window.history.replaceState({}, document.title);
       return;
     }
@@ -205,24 +231,29 @@ const Index = () => {
       const calendarAnalysis = session?.calendarImport ?? importedCalendarTasks;
       const snap = loadScheduleSnapshot();
       const baseSchedule =
-        generatedSchedule.length > 0
-          ? generatedSchedule
-          : session?.schedule?.length
-            ? session.schedule
-            : snap?.schedule ?? [];
+        passedSchedule.length > 0
+          ? passedSchedule
+          : generatedSchedule.length > 0
+            ? generatedSchedule
+            : session?.schedule?.length
+              ? session.schedule
+              : snap?.schedule ?? [];
+
+      const working = applyBreakIfNeeded(baseSchedule);
+      if (working.length > 0) setGeneratedSchedule(working);
 
       const stressPrompt = buildStressSchedulePrompt(stress);
       const vibePrompt = buildVibeChecksPrompt(vibeChecks);
 
       let prompt: string;
-      if (baseSchedule.length > 0) {
-        prompt = `${buildExistingSchedulePrompt(baseSchedule, optimizeMode)}${vibePrompt}${stressPrompt}\n\nUpdate my schedule for the rest of today based on my vibe check.`;
+      if (working.length > 0) {
+        prompt = `${buildExistingSchedulePrompt(working, optimizeMode)}${vibePrompt}${stressPrompt}\n\nUpdate ONLY the remaining day. Keep every task that already started. Do not erase earlier items.\nNever put homework or other focus work after wind-down, bedtime, or retiring for the night.`;
       } else {
-        prompt = `${vibePrompt}${stressPrompt}\n\nBuild a realistic schedule for the rest of today. Use calendar analysis and keep it achievable.`;
+        prompt = `${vibePrompt}${stressPrompt}\n\nBuild a realistic schedule for the rest of today. Use calendar analysis and keep it achievable.\nWork and homework must finish before wind-down and bedtime.`;
       }
 
       if (optimizeMode === "critical_only") {
-        prompt += "\n\nCRITICAL TASKS ONLY — defer all non-essential work.";
+        prompt += "\n\nCRITICAL TASKS ONLY for remaining time — move non-essential work later today. Do not delete original tasks.";
       }
 
       sendMessage(prompt, {
@@ -230,6 +261,7 @@ const Index = () => {
         calendarAnalysis,
         vibeChecks,
         optimizeMode,
+        existingSchedule: working,
       });
 
       if (optimizeMode === "critical_only") {
@@ -279,9 +311,22 @@ const Index = () => {
     const state = location.state as any;
     if (state?.openScheduleView && !state?.vibeCheckResult) {
       window.dispatchEvent(new CustomEvent(CALENDAR_SYNC_NOW_EVENT));
-      // Prefer the most recent Google Calendar pull (today's events) so the
-      // Pomodoro view reflects what's actually on the user's calendar now.
       (async () => {
+        const snap = loadScheduleSnapshot();
+        const saved = generatedSchedule.length > 0
+          ? generatedSchedule
+          : snap?.schedule?.length
+            ? snap.schedule
+            : (await loadTodaySchedule())?.schedule ?? [];
+
+        if (saved.length > 0) {
+          setGeneratedSchedule(saved);
+          if (snap?.settings) setSettings(snap.settings);
+          setViewMode("schedule");
+          window.history.replaceState({}, document.title);
+          return;
+        }
+
         try {
           const {
             data: { session },
@@ -315,20 +360,6 @@ const Index = () => {
           console.warn("Calendar cache unavailable, falling back to saved schedule", err);
         }
 
-        // Fallback: last saved schedule.
-        if (generatedSchedule.length === 0) {
-          const snap = loadScheduleSnapshot();
-          if (snap && snap.schedule.length > 0) {
-            setGeneratedSchedule(snap.schedule);
-            if (snap.settings) setSettings(snap.settings);
-          } else {
-            const result = await loadTodaySchedule();
-            if (result && result.schedule.length > 0) {
-              setGeneratedSchedule(result.schedule);
-              if (result.settings) setSettings(result.settings);
-            }
-          }
-        }
         setViewMode("schedule");
         window.history.replaceState({}, document.title);
       })();
@@ -446,6 +477,7 @@ const Index = () => {
       calendarAnalysis: context?.calendarAnalysis ?? importedCalendarTasks,
       vibeChecks: context?.vibeChecks,
       optimizeMode: context?.optimizeMode,
+      existingSchedule: context?.existingSchedule ?? generatedSchedule,
     });
     setViewMode("schedule");
   };

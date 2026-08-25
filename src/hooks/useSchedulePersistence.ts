@@ -122,14 +122,26 @@ export function useSchedulePersistence(userId: string | undefined) {
   const saveJournal = useCallback(async (journalText: string) => {
     writeLocal({ journalText });
     if (!userId) return;
+    const date = today();
+    const local = readLocal();
+    const { data } = await supabase
+      .from("user_schedules")
+      .select("schedule_data, settings, vibe_checks")
+      .eq("user_id", userId)
+      .eq("schedule_date", date)
+      .maybeSingle();
+    const remoteSchedule = (data?.schedule_data as unknown as ScheduleItem[] | null) ?? [];
+    const schedule = local.schedule.length > 0 ? local.schedule : remoteSchedule;
     const { error } = await supabase
       .from("user_schedules")
       .upsert(
         {
           user_id: userId,
-          schedule_date: today(),
-          schedule_data: [] as any,
+          schedule_date: date,
+          schedule_data: schedule as any,
+          settings: (data?.settings as any) ?? local.settings,
           journal_text: journalText,
+          vibe_checks: (data?.vibe_checks as any) ?? local.vibeChecks,
           updated_at: new Date().toISOString(),
         },
         { onConflict: "user_id,schedule_date" }
@@ -144,19 +156,23 @@ export function useSchedulePersistence(userId: string | undefined) {
     const date = today();
     const { data } = await supabase
       .from("user_schedules")
-      .select("vibe_checks")
+      .select("schedule_data, settings, journal_text, vibe_checks")
       .eq("user_id", userId)
       .eq("schedule_date", date)
       .maybeSingle();
     const prev = (data?.vibe_checks as unknown as VibeCheckEntry[] | null) ?? [];
     const next = [...prev, entry];
+    const remoteSchedule = (data?.schedule_data as unknown as ScheduleItem[] | null) ?? [];
+    const schedule = cur.schedule.length > 0 ? cur.schedule : remoteSchedule;
     const { error } = await supabase
       .from("user_schedules")
       .upsert(
         {
           user_id: userId,
           schedule_date: date,
-          schedule_data: [] as any,
+          schedule_data: schedule as any,
+          settings: (data?.settings as any) ?? cur.settings,
+          journal_text: (data?.journal_text as string | null) ?? cur.journalText,
           vibe_checks: next as any,
           updated_at: new Date().toISOString(),
         },
@@ -191,7 +207,9 @@ export function useSchedulePersistence(userId: string | undefined) {
       {
         user_id: userId,
         schedule_date: date,
-        schedule_data: (data?.schedule_data as any) ?? [],
+        schedule_data: ((Array.isArray(data?.schedule_data) && data.schedule_data.length > 0)
+          ? data.schedule_data
+          : readLocal().schedule) as any,
         settings: {
           ...existingSettings,
           calendarImport: {
@@ -229,16 +247,16 @@ export function useSchedulePersistence(userId: string | undefined) {
     if (error || !data) {
       return local.schedule.length > 0 ? local : null;
     }
+    const remoteSchedule = (data.schedule_data as unknown as ScheduleItem[]) ?? [];
     const remote: LocalSession = {
-      schedule: (data.schedule_data as unknown as ScheduleItem[]) ?? [],
-      settings: data.settings as unknown as UserSettings | null,
-      journalText: (data.journal_text as string | null) ?? "",
-      vibeChecks: (data.vibe_checks as unknown as VibeCheckEntry[]) ?? [],
+      schedule: remoteSchedule.length > 0 ? remoteSchedule : local.schedule,
+      settings: (data.settings as unknown as UserSettings | null) ?? local.settings,
+      journalText: (data.journal_text as string | null) ?? local.journalText,
+      vibeChecks: (data.vibe_checks as unknown as VibeCheckEntry[]) ?? local.vibeChecks,
       calendarImport:
         ((data.settings as Record<string, unknown> | null)?.calendarImport as { tasks?: AnalyzedTask[] } | undefined)
-          ?.tasks ?? readLocal().calendarImport ?? [],
+          ?.tasks ?? local.calendarImport ?? [],
     };
-    // Mirror remote to local
     writeLocal(remote);
     return remote;
   }, [userId]);

@@ -8,6 +8,7 @@ import {
   removeCompletedGoalBlocks,
   schedulesEquivalent,
 } from "@/lib/goalsSchedule";
+import { enforceEveningContext } from "@/lib/scheduleAdjustments";
 import { toast } from "sonner";
 
 /** Automatically finds gaps in the schedule and inserts goal blocks. */
@@ -27,7 +28,10 @@ export function useGoalScheduleSync(
     const cleaned = removeCompletedGoalBlocks(schedule, goals);
     let merged: ScheduleItem[];
     try {
-      merged = fillGoalGapsInSchedule(cleaned, formatted, settings);
+      merged = enforceEveningContext(
+        fillGoalGapsInSchedule(cleaned, formatted, settings),
+        settings.bedTime,
+      );
     } catch (err) {
       console.error("Goal schedule sync failed:", err);
       return;

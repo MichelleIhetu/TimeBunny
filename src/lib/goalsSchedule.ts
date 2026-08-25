@@ -160,6 +160,18 @@ export function isRelaxationBlock(title: string): boolean {
   return /\b(break|wind\s*down|winding\s*down|relax|bedtime|sleep|rest|decompress|unwind)\b/.test(t);
 }
 
+/** Wind-down / bedtime / retire — the day is over after these blocks. */
+export function isEndOfDayBlock(title: string, description?: string): boolean {
+  const t = `${title} ${description ?? ""}`.toLowerCase();
+  return /\b(wind[\s-]*down|winding[\s-]*down|bedtime|go(?:ing)? to bed|get ready for bed|ready for bed|retire(?:s|d)?(?:\s+for(?:\s+the)?\s+night)?|sleep(?:ing)?(?:\s+time)?|good\s*night|lights out|turn in)\b/.test(
+    t,
+  );
+}
+
+export function isFixedCalendarBlock(item: { title: string; description?: string }): boolean {
+  return /\[FIXED\]|📌\s*Fixed/i.test(`${item.title} ${item.description ?? ""}`);
+}
+
 export type ScheduleTimingContext = {
   bedTime?: string;
 };
@@ -376,12 +388,18 @@ export const fillGoalGapsInSchedule = (
 
   const nowMinutes = new Date().getHours() * 60 + new Date().getMinutes();
   const wakeMinutes = parseTimeToMinutes(settings.wakeTime);
-  const dayEnd = parseTimeToMinutes(settings.bedTime);
-  if (wakeMinutes === null || dayEnd === null) return attachGoalIdsToSchedule(schedule, goals);
-  const dayStart = Math.max(wakeMinutes, nowMinutes);
-  if (dayEnd <= dayStart) return attachGoalIdsToSchedule(schedule, goals);
+  const bedMinutes = parseTimeToMinutes(settings.bedTime);
+  if (wakeMinutes === null || bedMinutes === null) return attachGoalIdsToSchedule(schedule, goals);
 
   let working = attachGoalIdsToSchedule(schedule, goals);
+  const eodStarts = working
+    .filter((item) => isEndOfDayBlock(item.title, item.description))
+    .map((item) => parseTimeToMinutes(item.time))
+    .filter((t): t is number => t !== null);
+  const dayEnd =
+    eodStarts.length > 0 ? Math.min(bedMinutes, ...eodStarts) : bedMinutes;
+  const dayStart = Math.max(wakeMinutes, nowMinutes);
+  if (dayEnd <= dayStart) return working;
   const additions: ScheduleItem[] = [];
 
   const prioritized = [...goals].sort(

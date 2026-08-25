@@ -62,10 +62,10 @@ export const buildVibeChecksPrompt = (checks: VibeCheckEntry[]): string => {
   let adjustment = "";
   if (latest.adjustSchedule === "lighten") {
     adjustment =
-      "\nLATEST VIBE REQUEST: LIGHTEN — defer non-urgent tasks, add breaks, shorten blocks, protect wellbeing.";
+      "\nLATEST VIBE REQUEST: LIGHTEN — keep every original task. Defer non-urgent work to later today, add breaks, shorten blocks. Do not delete tasks.";
   } else if (latest.adjustSchedule === "reschedule") {
     adjustment =
-      "\nLATEST VIBE REQUEST: RESCHEDULE — rebuild remaining day from current time with realistic pacing.";
+      "\nLATEST VIBE REQUEST: RESCHEDULE — adjust remaining day from current time. Keep earlier tasks unchanged.";
   }
 
   const stressNote =
@@ -82,7 +82,7 @@ ${lines.join("\n")}${adjustment}${stressNote}
 Vibe-based rules:
 - struggling + low energy → fewer/deferred tasks, more breaks, no guilt-inducing density.
 - great + high energy → can front-load harder work but still respect deadlines.
-- needBreak=true → insert a 15–20 min break within the next 90 minutes.`;
+- needBreak=true → insert a 15–20 min break now (or within the next 30 minutes). Keep the rest of the schedule.`;
 };
 
 export const buildExistingSchedulePrompt = (
@@ -97,15 +97,22 @@ export const buildExistingSchedulePrompt = (
 
   const modeNote =
     mode === "lighten"
-      ? "\nOptimize by LIGHTENING this schedule — keep deadlines and [FIXED] items, trim or defer the rest."
+      ? "\nLIGHTEN this schedule — keep every original task. Move non-urgent items later or shorten them. Do not delete tasks. Copy every item that already started today unchanged."
       : mode === "reschedule"
-        ? "\nRebuild the schedule from now forward using this as context for what still matters."
+        ? "\nAdjust remaining items from now forward. Copy every item that already started today UNCHANGED (same title, start, end). Do not erase earlier tasks."
         : mode === "critical_only"
-          ? "\nCRITICAL ONLY — keep [FIXED] blocks and critical/deadline tasks; defer everything else."
-          : "";
+          ? "\nCRITICAL ONLY for remaining time — keep [FIXED] blocks and critical/deadline tasks up front; move everything else later today. Never delete original tasks. Copy earlier items unchanged."
+          : "\nKeep earlier items unchanged. Only adjust remaining items from now forward.";
 
-  return `\n\n📋 CURRENT SCHEDULE (reference)${modeNote}:
-${lines.join("\n")}`;
+  return `\n\n📋 CURRENT SCHEDULE (must preserve earlier items)${modeNote}:
+${lines.join("\n")}
+
+Preservation rules:
+- Include ALL items that start before now exactly as listed.
+- needBreak means INSERT a break — do not rebuild the day from scratch.
+- If you move a task, keep it on the schedule at a later time.
+- Respect the day's story: meals, classes, wind-down, and bedtime already on this list are context, not decorations.
+- Never schedule homework, studying, or other focus work AFTER wind-down, bedtime, or "retire for the night". Those blocks end the day.`;
 };
 
 /** Today's calendar events as fixed blocks from neurosymbolic analysis. */

@@ -863,7 +863,7 @@ const WizardInterface = ({ settings, onSettingsChange, onComplete, isLoading, ge
     const calendarAnalysisPrompt = buildCalendarAnalysisPrompt(calendarAnalysis);
     const vibeChecksPrompt = buildVibeChecksPrompt(persistedVibeChecks);
 
-    const startNote = `\n\nSchedule starts NOW at ${startTime} (current real time). Only schedule tasks from this time onwards, not from wake time.`;
+    const startNote = `\n\nSchedule starts NOW at ${startTime} (current real time). Only schedule tasks from this time onwards, not from wake time.\nUse all of this context (journal, calendar, vibe, current time, bedtime). Work and homework must finish BEFORE wind-down or bedtime — never after the user retires for the night.`;
 
     const journalNote = journalText.trim()
       ? `\n\nHere's what the user wrote about their day:\n"${journalContentToPlainText(journalText.trim())}"\nPlease incorporate any mentioned tasks, commitments, or context into the schedule.`
@@ -877,6 +877,7 @@ const WizardInterface = ({ settings, onSettingsChange, onComplete, isLoading, ge
         calendarAnalysis,
         vibeChecks: persistedVibeChecks,
         optimizeMode: "default",
+        existingSchedule: generatedSchedule,
       },
     );
   };
@@ -1168,6 +1169,7 @@ const WizardInterface = ({ settings, onSettingsChange, onComplete, isLoading, ge
                 <LofiRadioButton
                   playing={lofiPlaying}
                   trackTitle={lofiTrack?.title}
+                  trackArtist={lofiTrack?.artist}
                   onToggle={toggleLofi}
                   className="fixed top-4 left-4 z-[60]"
                 />
@@ -1223,6 +1225,7 @@ const WizardInterface = ({ settings, onSettingsChange, onComplete, isLoading, ge
                 {(() => {
                   const sorted = [...generatedSchedule].sort((a, b) => a.time.localeCompare(b.time));
                   const currentIdx = sorted.findIndex(s => s.id === activeTask.id);
+                  const earlier = currentIdx > 0 ? sorted.slice(0, currentIdx) : [];
                   const upcoming = sorted.slice(currentIdx + 1);
                   return (
                     <motion.div
@@ -1271,7 +1274,42 @@ const WizardInterface = ({ settings, onSettingsChange, onComplete, isLoading, ge
                             }}
                           >
                             <div className="max-h-[50vh] overflow-y-auto p-2 space-y-1.5">
-                              {upcoming.length === 0 ? (
+                              {earlier.length > 0 && (
+                                <div className="space-y-1.5 pb-1.5 mb-1.5" style={{ borderBottom: "1px solid hsl(280 30% 85%)" }}>
+                                  <p className="text-[10px] uppercase tracking-wider px-1" style={{ fontFamily: "var(--font-body)", color: "hsl(280 40% 55%)" }}>
+                                    Earlier today
+                                  </p>
+                                  {earlier.map((item) => (
+                                    <button
+                                      key={item.id}
+                                      onClick={() => startTask(item)}
+                                      className="w-full text-left px-3 py-2 rounded-xl cursor-pointer transition-all hover:scale-[1.02] active:scale-[0.98] opacity-70"
+                                      style={{
+                                        background: item.title.toLowerCase().includes("break")
+                                          ? "hsl(150 50% 85%)"
+                                          : "hsl(280 30% 92%)",
+                                        border: `1.5px solid ${item.title.toLowerCase().includes("break") ? "hsl(150 40% 65%)" : "hsl(280 30% 80%)"}`,
+                                      }}
+                                    >
+                                      <div className="flex items-center gap-2">
+                                        <span className="text-[10px] shrink-0" style={{ color: "hsl(0 0% 0%)", fontFamily: "'Squartiqa 4F', 'Share Tech Mono', monospace" }}>
+                                          {(() => {
+                                            const [h, m] = item.time.split(":");
+                                            const hour = parseInt(h);
+                                            const ampm = hour >= 12 ? "PM" : "AM";
+                                            const h12 = hour === 0 ? 12 : hour > 12 ? hour - 12 : hour;
+                                            return `${h12}:${m} ${ampm}`;
+                                          })()}
+                                        </span>
+                                        <span className="text-xs font-semibold truncate" style={{ fontFamily: "var(--font-body)", color: "hsl(280 40% 25%)" }}>
+                                          {item.title}
+                                        </span>
+                                      </div>
+                                    </button>
+                                  ))}
+                                </div>
+                              )}
+                              {upcoming.length === 0 && earlier.length === 0 ? (
                                 <p className="text-xs text-center py-3" style={{ fontFamily: "var(--font-body)", color: "hsl(280 40% 50%)" }}>
                                   No more tasks — you're done! ✧
                                 </p>
@@ -1369,7 +1407,10 @@ const WizardInterface = ({ settings, onSettingsChange, onComplete, isLoading, ge
                     </button>
                   ) : null}
                   <button
-                    onClick={() => navigate("/vibe-check", { state: { fromPomodoro: true, schedule: generatedSchedule } })}
+                    onClick={() => {
+                      saveScheduleSnapshot(generatedSchedule, settings);
+                      navigate("/vibe-check", { state: { fromPomodoro: true, schedule: generatedSchedule } });
+                    }}
                     className="px-6 py-2 rounded-full transition-all hover:scale-105 active:scale-95 flex items-center gap-2 text-white"
                     style={{ background: "hsl(210 90% 55%)", fontFamily: "var(--font-body)" }}
                     title="Need a break? Feeling distracted or overwhelmed?"
@@ -1847,7 +1888,8 @@ const WizardInterface = ({ settings, onSettingsChange, onComplete, isLoading, ge
         };
         const prev = prevMap[scene];
         const atInitial = scene === initialScene;
-        const canGoBack = atInitial ? !!onBackFromInitial : !!prev;
+        const inPomodoro = scene === "schedule" && !!activeTask;
+        const canGoBack = !inPomodoro && (atInitial ? !!onBackFromInitial : !!prev);
         if (!canGoBack) return null;
         return (
           <button

@@ -78,11 +78,7 @@ export const detectVibeStressSignals = (input: VibeInput): VibeStressSignals => 
         matched.has("drowning") ||
         matched.has("burnout") ||
         matched.has("really") ||
-        matched.has("tired") ||
-        matched.has("exhausted") ||
-        moodStress ||
-        energyStress ||
-        input.adjustSchedule === "lighten"),
+        matched.has("exhausted")),
   };
 };
 
@@ -96,8 +92,9 @@ export const buildStressSchedulePrompt = (signals: VibeStressSignals): string =>
 EASY WORKLOAD MODE — prioritize ONLY:
 1. [FIXED] calendar blocks and imminent deadlines (next 24h)
 2. Tasks tagged critical / high priority / 🎯 goals IF energy allows (short blocks only)
-DEFER or DROP: moderate/low priority, optional tasks, nice-to-haves.
-Add extra breaks. Shorter blocks (15–25 min). Be protective, not ambitious.`;
+DEFER (keep on the schedule later today — do not delete): moderate/low priority, optional tasks, nice-to-haves.
+Add extra breaks. Shorter blocks (15–25 min). Be protective, not ambitious.
+Keep every original task that already happened today unchanged.`;
   }
 
   return `\n\n⚠️ STRESS SIGNALS (${words}): Ease pacing — fewer tasks, more breaks, gentler transitions.`;
