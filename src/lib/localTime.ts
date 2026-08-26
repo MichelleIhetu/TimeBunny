@@ -39,6 +39,16 @@ export function localTimeString(date: Date = new Date(), timezone?: string): str
   }).format(date);
 }
 
+/** Seconds since local midnight, including the current second. */
+export function localNowSeconds(date: Date = new Date(), timezone?: string): number {
+  const hhmm = localTimeString(date, timezone);
+  const match = hhmm.trim().match(/^(\d{1,2}):(\d{2})/);
+  if (!match) {
+    return date.getHours() * 3600 + date.getMinutes() * 60 + date.getSeconds();
+  }
+  return Number(match[1]) * 3600 + Number(match[2]) * 60 + date.getSeconds();
+}
+
 /** Parse YYYY-MM-DD as local midnight. */
 export function parseLocalDate(dateStr: string): Date {
   const [y, m, d] = dateStr.split("-").map(Number);

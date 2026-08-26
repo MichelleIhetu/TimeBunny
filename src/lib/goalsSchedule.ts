@@ -174,7 +174,41 @@ export function isFixedCalendarBlock(item: { title: string; description?: string
 
 export type ScheduleTimingContext = {
   bedTime?: string;
+  /** Seconds since local midnight — used so live blocks count down what's left. */
+  nowSeconds?: number;
 };
+
+const getItemTimeWindowSeconds = (
+  item: ScheduleItem,
+  schedule: ScheduleItem[],
+  context?: ScheduleTimingContext,
+): { start: number; end: number } | null => {
+  const startMin = parseTimeToMinutes(item.time);
+  if (startMin === null) return null;
+  const start = startMin * 60;
+  const scheduledMin = getItemDurationMinutes(item, schedule, context);
+  const endMin = item.endTime ? parseTimeToMinutes(item.endTime) : null;
+  let end = endMin !== null ? endMin * 60 : start + scheduledMin * 60;
+  if (end <= start) end += 24 * 3600;
+  return { start, end };
+};
+
+/** In-progress block if now is inside it; otherwise the next upcoming block today. */
+export function getActiveOrUpcomingScheduleItem(
+  items: ScheduleItem[],
+  nowSeconds: number,
+  context?: ScheduleTimingContext,
+): ScheduleItem | null {
+  const sorted = [...items].sort((a, b) => a.time.localeCompare(b.time));
+  let upcoming: ScheduleItem | null = null;
+  for (const item of sorted) {
+    const window = getItemTimeWindowSeconds(item, items, context);
+    if (!window) continue;
+    if (nowSeconds >= window.start && nowSeconds < window.end) return item;
+    if (nowSeconds < window.start && !upcoming) upcoming = item;
+  }
+  return upcoming;
+}
 
 export const getItemDurationMinutes = (
   item: ScheduleItem,
@@ -232,7 +266,21 @@ export function getPomodoroDurationSeconds(
   schedule: ScheduleItem[],
   context?: ScheduleTimingContext,
 ): number {
-  return getItemDurationMinutes(item, schedule, context) * 60;
+  const scheduledSec = getItemDurationMinutes(item, schedule, context) * 60;
+  const now = context?.nowSeconds;
+  const window = getItemTimeWindowSeconds(item, schedule, context);
+  if (now == null || !window) return scheduledSec;
+
+  const maxSec = (isRelaxationBlock(item.title) ? MAX_RELAX_BLOCK_MINUTES : MAX_FOCUS_BLOCK_MINUTES) * 60;
+  const defaultSec = (isRelaxationBlock(item.title) ? DEFAULT_RELAX_BLOCK_MINUTES : DEFAULT_FOCUS_BLOCK_MINUTES) * 60;
+
+  if (now < window.start) {
+    return Math.min(window.end - window.start, maxSec);
+  }
+  if (now >= window.end) {
+    return defaultSec;
+  }
+  return Math.max(1, Math.min(window.end - now, maxSec));
 }
 
 export function formatPomodoroTimer(totalSeconds: number): string {

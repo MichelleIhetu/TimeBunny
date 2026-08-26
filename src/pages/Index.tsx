@@ -785,15 +785,17 @@ const Index = () => {
           {/* Top bar */}
           <div className="flex items-center justify-between px-4 sm:px-8 py-4">
             <div className="flex items-center gap-2">
-              <Link to="/auth">
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="gap-2 text-[hsl(280_40%_40%)] hover:text-[hsl(280_40%_30%)] glass-pill rounded-full px-4"
-                >
-                  <span className="font-body font-semibold">New user?</span>
-                </Button>
-              </Link>
+              {!user && (
+                <Link to="/auth">
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="gap-2 text-[hsl(280_40%_40%)] hover:text-[hsl(280_40%_30%)] glass-pill rounded-full px-4"
+                  >
+                    <span className="font-body font-semibold">New user?</span>
+                  </Button>
+                </Link>
+              )}
             </div>
             {user ? (
               <Button

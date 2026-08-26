@@ -15,6 +15,7 @@ import CalendarSuccess from "./pages/CalendarSuccess";
 import NotFound from "./pages/NotFound";
 import AppNavigation from "./components/AppNavigation";
 import ScheduleUpdatePostIt from "./components/ScheduleUpdatePostIt";
+import ImportantWeekPanel from "./components/ImportantWeekPanel";
 import GlobalCalendarSync from "./components/GlobalCalendarSync";
 import { LocalTimeProvider } from "@/hooks/useLocalTime";
 import { usePlatform } from "@/hooks/usePlatform";
@@ -104,6 +105,7 @@ const App = () => (
         <TokenCapture />
         <NativeDeepLinkRouter />
         <GlobalCalendarSync />
+        <ImportantWeekPanel />
         <ScheduleUpdatePostIt />
         <Routes>
           <Route path="/" element={<Index />} />

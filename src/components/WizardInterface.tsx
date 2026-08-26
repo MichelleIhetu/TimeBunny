@@ -21,7 +21,7 @@ import { getFormattedDate, getTimeOfDayGreeting, getDayName } from "@/lib/dayGre
 import { useAuth } from "@/hooks/useAuth";
 import { useGoals } from "@/hooks/useGoals";
 import { useSchedulePersistence, saveScheduleSnapshot } from "@/hooks/useSchedulePersistence";
-import { buildGoalsSchedulePrompt, formatGoalsForSchedule, formatPomodoroTimer, getItemDurationMinutes, getPomodoroDurationSeconds, resolveGoalIdFromItem } from "@/lib/goalsSchedule";
+import { buildGoalsSchedulePrompt, formatGoalsForSchedule, formatPomodoroTimer, getActiveOrUpcomingScheduleItem, getItemDurationMinutes, getPomodoroDurationSeconds, resolveGoalIdFromItem } from "@/lib/goalsSchedule";
 import { CALENDAR_SYNCED_EVENT } from "@/lib/calendarSync";
 import { CRITICAL_ONLY_COMFORT_MESSAGES } from "@/lib/vibeStressDetection";
 import {
@@ -40,12 +40,14 @@ import {
   stopTimerUpAlarm,
 } from "@/lib/pomodoroBunny";
 import { toast } from "sonner";
+import { localNowSeconds } from "@/lib/localTime";
 import { markCalendarEventComplete } from "@/lib/calendar/markCalendarEventComplete";
 import { resolveCalendarEventForScheduleItem } from "@/lib/calendar/scheduleCalendarMatch";
 import { loadJournalSpeechBubblePosition } from "@/lib/journalSpeechBubblePosition";
 import { supabase } from "@/integrations/supabase/client";
 import PomodoroBunnyCompanion from "@/components/PomodoroBunnyCompanion";
 import LofiRadioButton from "@/components/LofiRadioButton";
+import PomodoroCheckerBackground from "@/components/PomodoroCheckerBackground";
 import { useLofiRadio } from "@/hooks/useLofiRadio";
 import libraryBg from "@/assets/library-background.png";
 import cozyBg from "@/assets/cozy-background.png";
@@ -455,30 +457,22 @@ const WizardInterface = ({ settings, onSettingsChange, onComplete, isLoading, ge
 
   const startTask = (item: ScheduleItem) => {
     stopTimerUpAlarm();
-    const totalSec = getPomodoroDurationSeconds(item, generatedSchedule, { bedTime: settings.bedTime });
+    const timing = { bedTime: settings.bedTime, nowSeconds: localNowSeconds() };
+    const totalSec = getPomodoroDurationSeconds(item, generatedSchedule, timing);
     setActiveTask(item);
     setTimerDuration(totalSec);
     setTimerSeconds(totalSec);
     setTimerRunning(true);
   };
 
-  const getCurrentScheduleTask = (items: ScheduleItem[]): ScheduleItem | null => {
-    if (items.length === 0) return null;
-    const sorted = [...items].sort((a, b) => a.time.localeCompare(b.time));
-    const now = new Date();
-    const currentMinutes = now.getHours() * 60 + now.getMinutes();
-    let best = sorted[0];
-    for (const item of sorted) {
-      const [h, m] = item.time.split(":").map(Number);
-      if (h * 60 + m <= currentMinutes) best = item;
-      else break;
-    }
-    return best;
-  };
-
   const handleStartFocusTimer = () => {
-    const task = getCurrentScheduleTask(generatedSchedule);
-    if (task) startTask(task);
+    const timing = { bedTime: settings.bedTime, nowSeconds: localNowSeconds() };
+    const task = getActiveOrUpcomingScheduleItem(generatedSchedule, timing.nowSeconds, timing);
+    if (!task) {
+      toast.info("Nothing left on today's schedule — you're done!");
+      return;
+    }
+    startTask(task);
   };
 
   const stopTask = () => {
@@ -1164,8 +1158,12 @@ const WizardInterface = ({ settings, onSettingsChange, onComplete, isLoading, ge
                 initial={{ opacity: 0, scale: 0.95 }}
                 animate={{ opacity: 1, scale: 1 }}
                 className="fixed inset-0 z-50 flex flex-col items-center justify-center overflow-hidden"
-                style={{ background: "hsl(300 50% 88%)" }}
+                style={{ background: "#EDCBF6" }}
               >
+                <PomodoroCheckerBackground
+                  progress={timerDuration > 0 ? 1 - timerSeconds / timerDuration : 0}
+                  running={timerRunning}
+                />
                 <LofiRadioButton
                   playing={lofiPlaying}
                   trackTitle={lofiTrack?.title}
@@ -1175,14 +1173,14 @@ const WizardInterface = ({ settings, onSettingsChange, onComplete, isLoading, ge
                 />
 
                 {/* Clock outline background */}
-                <div className="absolute inset-0 flex items-center justify-center pointer-events-none overflow-hidden">
+                <div className="absolute inset-0 flex items-center justify-center pointer-events-none overflow-hidden z-[1]">
                   <div
                     className="rounded-full absolute"
                     style={{
                       width: "140vmax",
                       height: "140vmax",
                       border: "16px solid hsl(90 80% 45%)",
-                      background: "hsl(40 60% 95%)",
+                      background: "transparent",
                     }}
                   >
                     <div className="absolute top-[2%] left-1/2 -translate-x-1/2 w-[16px] h-[60px] rounded-full" style={{ background: "hsl(90 80% 45%)" }} />
