@@ -1,5 +1,6 @@
 import { DEFAULT_SCHEDULE_SUIT, type ScheduleItem } from "@/types/schedule";
 import { isEndOfDayBlock, isFixedCalendarBlock, isRelaxationBlock } from "@/lib/goalsSchedule";
+import { alignScheduleToTimeOfDay, type TimeOfDayContext } from "@/lib/scheduleTimeOfDay";
 
 const parseHHMM = (time: string | undefined): number | null => {
   if (!time) return null;
@@ -96,7 +97,7 @@ export const mergeScheduleUpdate = (
   original: ScheduleItem[],
   incoming: ScheduleItem[],
   nowHHMM: string,
-  options?: { keepDroppedFuture?: boolean; bedTime?: string },
+  options?: { keepDroppedFuture?: boolean; bedTime?: string; wakeTime?: string },
 ): ScheduleItem[] => {
   const now = parseHHMM(nowHHMM);
   if (now === null) {
@@ -177,7 +178,11 @@ export const mergeScheduleUpdate = (
     }
   }
 
-  return enforceEveningContext([...past, ...future, ...extras], options?.bedTime);
+  return enforceEveningContext([...past, ...future, ...extras], {
+    bedTime: options?.bedTime,
+    wakeTime: options?.wakeTime,
+    nowHHMM,
+  });
 };
 
 const itemDurationMinutes = (item: ScheduleItem): number => {
@@ -190,15 +195,21 @@ const itemDurationMinutes = (item: ScheduleItem): number => {
 /**
  * Keep the day in a sensible order: work and homework before wind-down / bedtime.
  * Never leave a focus task after the user has already retired for the night.
+ * Titles are aligned to time of day first (no midday "gentle awakening").
  */
 export const enforceEveningContext = (
   schedule: ScheduleItem[],
-  bedTime?: string,
+  bedTimeOrOptions?: string | TimeOfDayContext,
 ): ScheduleItem[] => {
-  if (schedule.length === 0) return schedule;
+  const ctx: TimeOfDayContext =
+    typeof bedTimeOrOptions === "object" && bedTimeOrOptions !== null
+      ? bedTimeOrOptions
+      : { bedTime: bedTimeOrOptions };
+  const aligned = alignScheduleToTimeOfDay(schedule, ctx);
+  if (aligned.length === 0) return aligned;
 
-  const bed = parseHHMM(bedTime);
-  const sorted = [...schedule].sort((a, b) => a.time.localeCompare(b.time));
+  const bed = parseHHMM(ctx.bedTime);
+  const sorted = [...aligned].sort((a, b) => a.time.localeCompare(b.time));
   const eodStarts = sorted
     .filter((item) => isEndOfDayBlock(item.title, item.description))
     .map((item) => parseHHMM(item.time))

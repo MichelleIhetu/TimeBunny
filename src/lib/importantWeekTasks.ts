@@ -103,6 +103,7 @@ export function collectImportantWeekTasks(
   for (const task of tasks) {
     if (!isImportantCalendar(task)) continue;
     if (eventHasEnded(task, today, nowMinutes)) continue;
+    if (task.date && task.date < today) continue;
 
     if (inRange(task.date, today, weekEnd) && task.date) {
       const happeningNow = eventIsHappening(task, today, nowMinutes);

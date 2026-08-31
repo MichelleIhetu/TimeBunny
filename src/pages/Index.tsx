@@ -16,6 +16,8 @@ import { useGoalScheduleSync } from "@/hooks/useGoalScheduleSync";
 import {
   buildExistingSchedulePrompt,
   buildVibeChecksPrompt,
+  TIME_OF_DAY_TITLE_RULES,
+  PAST_DUE_SCHEDULE_RULES,
   type ScheduleGenerationContext,
 } from "@/lib/scheduleOptimizationContext";
 import { buildStressSchedulePrompt, detectVibeStressSignals } from "@/lib/vibeStressDetection";
@@ -247,9 +249,9 @@ const Index = () => {
 
       let prompt: string;
       if (working.length > 0) {
-        prompt = `${buildExistingSchedulePrompt(working, optimizeMode)}${vibePrompt}${stressPrompt}\n\nUpdate ONLY the remaining day. Keep every task that already started. Do not erase earlier items.\nNever put homework or other focus work after wind-down, bedtime, or retiring for the night.`;
+        prompt = `${buildExistingSchedulePrompt(working, optimizeMode)}${vibePrompt}${stressPrompt}\n\nUpdate ONLY the remaining day. Keep every task that already started. Do not erase earlier items.\nNever put homework or other focus work after wind-down, bedtime, or retiring for the night.\n${TIME_OF_DAY_TITLE_RULES}\n${PAST_DUE_SCHEDULE_RULES}`;
       } else {
-        prompt = `${vibePrompt}${stressPrompt}\n\nBuild a realistic schedule for the rest of today. Use calendar analysis and keep it achievable.\nWork and homework must finish before wind-down and bedtime.`;
+        prompt = `${vibePrompt}${stressPrompt}\n\nBuild a realistic schedule for the rest of today. Use calendar analysis and keep it achievable.\nWork and homework must finish before wind-down and bedtime.\n${TIME_OF_DAY_TITLE_RULES}\n${PAST_DUE_SCHEDULE_RULES}`;
       }
 
       if (optimizeMode === "critical_only") {
@@ -262,6 +264,7 @@ const Index = () => {
         vibeChecks,
         optimizeMode,
         existingSchedule: working,
+        journalText: session?.journalText ?? snap?.journalText,
       });
 
       if (optimizeMode === "critical_only") {
@@ -478,6 +481,7 @@ const Index = () => {
       vibeChecks: context?.vibeChecks,
       optimizeMode: context?.optimizeMode,
       existingSchedule: context?.existingSchedule ?? generatedSchedule,
+      journalText: context?.journalText,
     });
     setViewMode("schedule");
   };

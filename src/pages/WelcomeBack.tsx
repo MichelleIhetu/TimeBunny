@@ -519,6 +519,7 @@ const WelcomeBack = () => {
       vibeChecks: context?.vibeChecks,
       optimizeMode: context?.optimizeMode,
       existingSchedule: context?.existingSchedule ?? generatedSchedule,
+      journalText: context?.journalText,
     });
     goToWizard();
   };

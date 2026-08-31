@@ -124,7 +124,9 @@ ${calendarAnalysis
           .join("\n")}
 
 Use importance (critical>major>moderate>minor) and lead_days to prioritize prep blocks.
-[FIXED TODAY] events are immovable walls with exact times.`
+[FIXED TODAY] events are immovable walls with exact times.
+Do NOT schedule prep for events whose date is already past unless the user's journal explicitly names that leftover work.
+Upcoming events may still get catch-up prep if their recommended start date has passed.`
         : "";
 
     const vibeBlock =
@@ -271,6 +273,23 @@ DAY ARC & EVENING CONTEXT (NON-NEGOTIABLE)
 - If leftover work remains, place it BEFORE wind-down (delay wind-down if needed) as long as it still ends by Bed Time (${settings.bedTime}).
 - No new focus tasks at or after Bed Time (${settings.bedTime}).
 - A 15–20 minute gap after "retire for the night" is not a homework slot.
+
+═══════════════════════════════════════
+TIME-OF-DAY TITLES (NEUROSYMBOLIC — NON-NEGOTIABLE)
+═══════════════════════════════════════
+- Titles must match the clock AND the remaining day. If Current local time is after morning, do NOT invent a sunrise-to-noon arc.
+- "Gentle awakening", wake-up, morning routine, rise-and-shine belong ONLY near Wake Time (${settings.wakeTime}) and NEVER after 10:30 or after ${currentLocalTime || settings.wakeTime} if morning has already passed.
+- Breakfast 06:00–10:30. Lunch 11:00–14:30. Dinner 17:00–20:30. Never put breakfast or awakening in the afternoon.
+- Wind-down / bedtime / lights-out only in the last ~90 minutes before Bed Time (${settings.bedTime}). A 2pm "wind-down" is wrong — call it a break.
+- Whimsical titles are allowed only if the meaning still matches the hour (tea-party break at 3pm is ok; gentle awakening at 3pm is not).
+
+═══════════════════════════════════════
+PAST-DUE / PAST EVENTS (NON-NEGOTIABLE)
+═══════════════════════════════════════
+- Do NOT schedule prep, catch-up, or leftover work for calendar events whose date is already past.
+- Do NOT put overdue goals on today's schedule just because their finish-by date elapsed.
+- The ONLY exception is when the user's journal explicitly names that past-due task as still needing work.
+- If a future event's prep start date is already past, you MAY still schedule prep for that upcoming event.
 
 Be encouraging and practical, but NEVER sacrifice deadline accuracy for whimsy. The schedule must be REALISTIC and ACHIEVABLE.`;
 

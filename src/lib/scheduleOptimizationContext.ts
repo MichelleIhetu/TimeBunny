@@ -1,15 +1,20 @@
 import type { AnalyzedTask } from "@/components/CalendarAnalysisModal";
 import type { VibeCheckEntry } from "@/hooks/useSchedulePersistence";
 import type { ScheduleItem } from "@/types/schedule";
+import { localDateString } from "@/lib/localTime";
+import { TIME_OF_DAY_TITLE_RULES } from "@/lib/scheduleTimeOfDay";
+import { PAST_DUE_SCHEDULE_RULES } from "@/lib/schedulePastDue";
+
+export { TIME_OF_DAY_TITLE_RULES } from "@/lib/scheduleTimeOfDay";
+export { PAST_DUE_SCHEDULE_RULES } from "@/lib/schedulePastDue";
 
 export type ScheduleGenerationContext = {
   calendarAnalysis?: AnalyzedTask[];
   vibeChecks?: VibeCheckEntry[];
   optimizeMode?: "default" | "lighten" | "reschedule" | "critical_only";
   existingSchedule?: ScheduleItem[];
+  journalText?: string;
 };
-
-import { localDateString } from "@/lib/localTime";
 
 const todayStr = () => localDateString();
 
@@ -39,9 +44,12 @@ ${lines.join("\n")}
 
 Calendar optimization rules (from symbolic + neural fusion):
 - Events marked [FIXED TODAY] are immovable — copy exact start/end times into output.
-- Schedule prep work for critical/major items BEFORE their event date using lead_days and prep milestones.
+- Schedule prep work for critical/major UPCOMING items BEFORE their event date using lead_days and prep milestones.
 - Weight scheduling priority: critical > major > moderate > minor.
-- If prep start date is today or past, block time TODAY for prep milestones even around fixed events.`;
+- If an upcoming event's prep start date is today or past, block time TODAY for those prep milestones.
+- Never invent prep for events that already happened.
+${TIME_OF_DAY_TITLE_RULES}
+${PAST_DUE_SCHEDULE_RULES}`;
 };
 
 export const buildVibeChecksPrompt = (checks: VibeCheckEntry[]): string => {
@@ -112,7 +120,8 @@ Preservation rules:
 - needBreak means INSERT a break — do not rebuild the day from scratch.
 - If you move a task, keep it on the schedule at a later time.
 - Respect the day's story: meals, classes, wind-down, and bedtime already on this list are context, not decorations.
-- Never schedule homework, studying, or other focus work AFTER wind-down, bedtime, or "retire for the night". Those blocks end the day.`;
+- Never schedule homework, studying, or other focus work AFTER wind-down, bedtime, or "retire for the night". Those blocks end the day.
+- Titles must match the clock: no wake-up / gentle awakening / morning routine after 10:30 or after now if morning is over. Meals and wind-down must sit at plausible hours.`;
 };
 
 /** Today's calendar events as fixed blocks from neurosymbolic analysis. */

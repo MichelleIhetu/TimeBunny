@@ -3,6 +3,11 @@ import { ChatMessage, UserSettings, ScheduleItem } from "@/types/schedule";
 import { fillGoalGapsInSchedule, type GoalForSchedule } from "@/lib/goalsSchedule";
 import { enforceEveningContext, mergeScheduleUpdate } from "@/lib/scheduleAdjustments";
 import {
+  dropUnrequestedPastDueItems,
+  filterCalendarAnalysisForSchedule,
+  filterGoalsForSchedule,
+} from "@/lib/schedulePastDue";
+import {
   localDateString,
   localTimeString,
   getUserTimezone,
@@ -42,6 +47,7 @@ export function useChat(settings: UserSettings) {
       vibeChecks?: ScheduleGenerationContext["vibeChecks"];
       optimizeMode?: ScheduleGenerationContext["optimizeMode"];
       existingSchedule?: ScheduleItem[];
+      journalText?: string;
     },
   ) => {
     const userMessage: ChatMessage = {
@@ -53,6 +59,17 @@ export function useChat(settings: UserSettings) {
     
     setMessages(prev => [...prev, userMessage]);
     setIsLoading(true);
+
+    const journalText = options?.journalText ?? "";
+    const nowHHMM = localTimeString();
+    const goalsForDay = filterGoalsForSchedule(
+      (options?.goals ?? []) as GoalForSchedule[],
+      { journalText },
+    );
+    const calendarForDay = filterCalendarAnalysisForSchedule(options?.calendarAnalysis, {
+      journalText,
+      nowHHMM,
+    });
 
     let assistantContent = "";
 
@@ -69,15 +86,15 @@ export function useChat(settings: UserSettings) {
             content: m.content,
           })),
           settings,
-          goals: options?.goals ?? [],
-          calendarAnalysis: options?.calendarAnalysis ?? [],
+          goals: goalsForDay,
+          calendarAnalysis: calendarForDay,
           vibeChecks: options?.vibeChecks ?? [],
           optimizeMode: options?.optimizeMode ?? "default",
           existingSchedule: options?.existingSchedule ?? [],
           timezone: getUserTimezone(),
           currentTime: new Date().toISOString(),
           localDate: localDateString(),
-          currentLocalTime: localTimeString(),
+          currentLocalTime: nowHHMM,
           currentLocalDate: new Date().toLocaleDateString(undefined, { weekday: "long", year: "numeric", month: "long", day: "numeric" }),
           utcOffsetMinutes: getUtcOffsetMinutes(),
         }),
@@ -163,17 +180,31 @@ export function useChat(settings: UserSettings) {
           options?.optimizeMode === "lighten" || options?.optimizeMode === "critical_only";
         const withHistory =
           existing.length > 0
-            ? mergeScheduleUpdate(existing, schedule, localTimeString(), {
+            ? mergeScheduleUpdate(existing, schedule, nowHHMM, {
                 keepDroppedFuture,
                 bedTime: settings.bedTime,
+                wakeTime: settings.wakeTime,
               })
-            : enforceEveningContext(schedule, settings.bedTime);
-        const goalsList = (options?.goals ?? []) as GoalForSchedule[];
+            : enforceEveningContext(schedule, {
+                bedTime: settings.bedTime,
+                wakeTime: settings.wakeTime,
+                nowHHMM,
+              });
         const withGoals =
-          goalsList.length > 0
-            ? fillGoalGapsInSchedule(withHistory, goalsList, settings)
+          goalsForDay.length > 0
+            ? fillGoalGapsInSchedule(withHistory, goalsForDay, settings)
             : withHistory;
-        const merged = enforceEveningContext(withGoals, settings.bedTime);
+        const withEvening = enforceEveningContext(withGoals, {
+          bedTime: settings.bedTime,
+          wakeTime: settings.wakeTime,
+          nowHHMM,
+        });
+        const merged = dropUnrequestedPastDueItems(withEvening, {
+          calendarAnalysis: options?.calendarAnalysis,
+          goals: (options?.goals ?? []) as GoalForSchedule[],
+          journalText,
+          nowHHMM,
+        });
         setGeneratedSchedule(merged);
         toast.success("Your schedule is ready! ✨");
       }

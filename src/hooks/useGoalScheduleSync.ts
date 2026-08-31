@@ -9,6 +9,7 @@ import {
   schedulesEquivalent,
 } from "@/lib/goalsSchedule";
 import { enforceEveningContext } from "@/lib/scheduleAdjustments";
+import { dropUnrequestedPastDueItems, filterGoalsForSchedule } from "@/lib/schedulePastDue";
 import { toast } from "sonner";
 
 /** Automatically finds gaps in the schedule and inserts goal blocks. */
@@ -24,13 +25,19 @@ export function useGoalScheduleSync(
   useEffect(() => {
     if (!enabled || syncingRef.current || schedule.length === 0 || goals.length === 0) return;
 
-    const formatted = formatGoalsForSchedule(goals);
-    const cleaned = removeCompletedGoalBlocks(schedule, goals);
+    const allGoals = formatGoalsForSchedule(goals);
+    const formatted = filterGoalsForSchedule(allGoals);
+    const cleaned = dropUnrequestedPastDueItems(removeCompletedGoalBlocks(schedule, goals), {
+      goals: allGoals,
+    });
     let merged: ScheduleItem[];
     try {
       merged = enforceEveningContext(
         fillGoalGapsInSchedule(cleaned, formatted, settings),
-        settings.bedTime,
+        {
+          bedTime: settings.bedTime,
+          wakeTime: settings.wakeTime,
+        },
       );
     } catch (err) {
       console.error("Goal schedule sync failed:", err);

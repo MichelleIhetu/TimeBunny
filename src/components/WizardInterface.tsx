@@ -10,10 +10,18 @@ import JournalReferencePicker from "./JournalReferencePicker";
 import JournalEditor, { type JournalEditorHandle } from "./JournalEditor";
 import type { JournalReferenceInsert } from "@/lib/journalReferences";
 import { journalContentToPlainText } from "@/lib/journalReferences";
+import { localNowSeconds, localTimeString } from "@/lib/localTime";
+import {
+  filterCalendarAnalysisForSchedule,
+  filterGoalsForSchedule,
+  isPastDueDate,
+} from "@/lib/schedulePastDue";
 import type { AnalyzedTask } from "@/components/CalendarAnalysisModal";
 import {
   buildCalendarAnalysisPrompt,
   buildVibeChecksPrompt,
+  TIME_OF_DAY_TITLE_RULES,
+  PAST_DUE_SCHEDULE_RULES,
   type ScheduleGenerationContext,
 } from "@/lib/scheduleOptimizationContext";
 import type { VibeCheckEntry } from "@/hooks/useSchedulePersistence";
@@ -40,14 +48,12 @@ import {
   stopTimerUpAlarm,
 } from "@/lib/pomodoroBunny";
 import { toast } from "sonner";
-import { localNowSeconds } from "@/lib/localTime";
 import { markCalendarEventComplete } from "@/lib/calendar/markCalendarEventComplete";
 import { resolveCalendarEventForScheduleItem } from "@/lib/calendar/scheduleCalendarMatch";
 import { loadJournalSpeechBubblePosition } from "@/lib/journalSpeechBubblePosition";
 import { supabase } from "@/integrations/supabase/client";
 import PomodoroBunnyCompanion from "@/components/PomodoroBunnyCompanion";
 import LofiRadioButton from "@/components/LofiRadioButton";
-import PomodoroCheckerBackground from "@/components/PomodoroCheckerBackground";
 import { useLofiRadio } from "@/hooks/useLofiRadio";
 import libraryBg from "@/assets/library-background.png";
 import cozyBg from "@/assets/cozy-background.png";
@@ -210,7 +216,7 @@ const WizardInterface = ({ settings, onSettingsChange, onComplete, isLoading, ge
         prev.filter((t) => t.id.startsWith("goal-")).map((t) => t.id),
       );
       const goalTasks: TaskEntry[] = formattedGoals
-        .filter((g) => !existingGoalIds.has(`goal-${g.id}`))
+        .filter((g) => !isPastDueDate(g.end_date) && !existingGoalIds.has(`goal-${g.id}`))
         .map((g) => ({
           id: `goal-${g.id}`,
           title: `🎯 ${g.title}`,
@@ -854,24 +860,31 @@ const WizardInterface = ({ settings, onSettingsChange, onComplete, isLoading, ge
         ).join('\n')}\n\nPlease include these fixed events in the final schedule output and fill the gaps between them with my tasks.`
       : '';
 
-    const calendarAnalysisPrompt = buildCalendarAnalysisPrompt(calendarAnalysis);
+    const journalPlain = journalContentToPlainText(journalText.trim());
+    const liveCalendar = filterCalendarAnalysisForSchedule(calendarAnalysis, {
+      journalText: journalPlain,
+      nowHHMM: localTimeString(),
+    });
+    const liveGoals = filterGoalsForSchedule(formattedGoals, { journalText: journalPlain });
+    const calendarAnalysisPrompt = buildCalendarAnalysisPrompt(liveCalendar);
     const vibeChecksPrompt = buildVibeChecksPrompt(persistedVibeChecks);
 
-    const startNote = `\n\nSchedule starts NOW at ${startTime} (current real time). Only schedule tasks from this time onwards, not from wake time.\nUse all of this context (journal, calendar, vibe, current time, bedtime). Work and homework must finish BEFORE wind-down or bedtime — never after the user retires for the night.`;
+    const startNote = `\n\nSchedule starts NOW at ${startTime} (current real time). Only schedule tasks from this time onwards, not from wake time.\nUse all of this context (journal, calendar, vibe, current time, bedtime). Work and homework must finish BEFORE wind-down or bedtime — never after the user retires for the night.\n${TIME_OF_DAY_TITLE_RULES}`;
 
-    const journalNote = journalText.trim()
-      ? `\n\nHere's what the user wrote about their day:\n"${journalContentToPlainText(journalText.trim())}"\nPlease incorporate any mentioned tasks, commitments, or context into the schedule.`
+    const journalNote = journalPlain
+      ? `\n\nHere's what the user wrote about their day:\n"${journalPlain}"\nPlease incorporate any mentioned tasks, commitments, or context into the schedule. Only revive a past-due event or overdue goal if they named it here.`
       : "";
 
-    const goalsPrompt = buildGoalsSchedulePrompt(formattedGoals);
+    const goalsPrompt = buildGoalsSchedulePrompt(liveGoals);
     
     onComplete(
-      `My tasks:\n${tasksText}${deadlineWarning}${eventsList}${calendarAnalysisPrompt}${vibeChecksPrompt}${journalNote}${goalsPrompt}${startNote}\n\n${breakText}`,
+      `My tasks:\n${tasksText}${deadlineWarning}${eventsList}${calendarAnalysisPrompt}${vibeChecksPrompt}${journalNote}${goalsPrompt}${startNote}\n\n${breakText}\n${PAST_DUE_SCHEDULE_RULES}`,
       {
-        calendarAnalysis,
+        calendarAnalysis: liveCalendar,
         vibeChecks: persistedVibeChecks,
         optimizeMode: "default",
         existingSchedule: generatedSchedule,
+        journalText: journalPlain,
       },
     );
   };
@@ -1158,12 +1171,8 @@ const WizardInterface = ({ settings, onSettingsChange, onComplete, isLoading, ge
                 initial={{ opacity: 0, scale: 0.95 }}
                 animate={{ opacity: 1, scale: 1 }}
                 className="fixed inset-0 z-50 flex flex-col items-center justify-center overflow-hidden"
-                style={{ background: "#EDCBF6" }}
+                style={{ background: "hsl(300 50% 88%)" }}
               >
-                <PomodoroCheckerBackground
-                  progress={timerDuration > 0 ? 1 - timerSeconds / timerDuration : 0}
-                  running={timerRunning}
-                />
                 <LofiRadioButton
                   playing={lofiPlaying}
                   trackTitle={lofiTrack?.title}
@@ -1173,14 +1182,14 @@ const WizardInterface = ({ settings, onSettingsChange, onComplete, isLoading, ge
                 />
 
                 {/* Clock outline background */}
-                <div className="absolute inset-0 flex items-center justify-center pointer-events-none overflow-hidden z-[1]">
+                <div className="absolute inset-0 flex items-center justify-center pointer-events-none overflow-hidden">
                   <div
                     className="rounded-full absolute"
                     style={{
                       width: "140vmax",
                       height: "140vmax",
                       border: "16px solid hsl(90 80% 45%)",
-                      background: "transparent",
+                      background: "hsl(40 60% 95%)",
                     }}
                   >
                     <div className="absolute top-[2%] left-1/2 -translate-x-1/2 w-[16px] h-[60px] rounded-full" style={{ background: "hsl(90 80% 45%)" }} />
